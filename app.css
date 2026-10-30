@@ -204,8 +204,12 @@ svg.chart{width:100%;height:auto;display:block;margin-top:6px}
 /* Sheet / modal */
 .sheet{position:fixed;inset:0;z-index:30;background:rgba(18,26,20,.45);display:flex;align-items:flex-end;justify-content:center}
 .sheet[hidden]{display:none}
-.sheet .pane{background:#fff;width:100%;max-width:640px;border-radius:20px 20px 0 0;padding:16px 16px calc(18px + var(--sab));max-height:92vh;max-height:92dvh;overflow:auto;-webkit-overflow-scrolling:touch;animation:up .2s ease-out}
-@keyframes up{from{transform:translateY(40px);opacity:.4}}
+.sheet .pane{background:#fff;width:100%;max-width:640px;border-radius:20px 20px 0 0;padding:16px 16px calc(18px + var(--sab));max-height:92vh;max-height:92dvh;overflow:auto;-webkit-overflow-scrolling:touch;animation:up .42s cubic-bezier(.32,.72,0,1);will-change:transform}
+/* iOS-style sheet: springs up from below (slight settle), backdrop fades in. */
+@keyframes up{from{transform:translate3d(0,100%,0)}}
+.sheet:not(.closing){animation:bgin .28s ease-out}
+@keyframes bgin{from{background-color:rgba(18,26,20,0)}}
+@media (prefers-reduced-motion:reduce){.sheet .pane{animation:fadein .2s ease-out}@keyframes fadein{from{opacity:0}}}
 .pane h3{margin:2px 0 12px;font-size:19px}
 .pane .grab{width:40px;height:5px;border-radius:3px;background:#d5d9d5;margin:0 auto 12px}
 .pane video{width:100%;border-radius:12px;background:#000;max-height:55vh}
@@ -277,3 +281,12 @@ body.kb nav#tabs{display:none} body.kb .fab{display:none}
 .lpbox button{display:block;width:100%;min-height:46px;border:0;border-top:1px solid var(--line);background:#fff;font-size:17px;cursor:pointer}
 .lpbox .lpdel{color:#c0392b;font-weight:600}
 .lpbox button:active{background:var(--tint)}
+/* Stills viewer: swipe down to dismiss. Vertical pans on the photos belong to the dismiss drag, not the browser. */
+.pane.stillsheet{overscroll-behavior:contain}
+.pane.stillsheet .stv{touch-action:pan-x}
+.sheet{overscroll-behavior:contain}
+/* Exercise detail: the Form photos stack sits over the video's bottom-right corner (same 52px fan as the list). */
+.vidwrap{position:relative}
+.dstills{--th:52px;position:absolute;right:10px;bottom:10px;z-index:2;filter:drop-shadow(0 2px 6px rgba(0,0,0,.45));transition:bottom .2s ease}
+.vidwrap.playing .dstills{bottom:58px}   /* clear the native play/scrubber/fullscreen bar */
+.dstills .stills::before{content:"";position:absolute;inset:-8px}   /* comfortable ~68px hit area */

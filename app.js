@@ -100,8 +100,22 @@ function openSheet(html, onMount) {
   sheet.hidden = false;
   sheetCleanup = onMount?.(sheet.firstElementChild) || null;
 }
-function closeSheet() {
+/* Sheets: open = iOS-style spring up + backdrop fade (CSS). Close = the sheet is gone immediately (state/logic), while a
+   frozen copy slides down and the backdrop fades out on top. `anim=false` when a gesture already moved it away. */
+function closeSheet(anim = true) {
   sheet.querySelectorAll('video').forEach(v => { v.pause(); v.removeAttribute('src'); v.load(); });
+  if (anim && !sheet.hidden && sheet.firstElementChild) {
+    const ghost = sheet.cloneNode(true), dur = reduceMotion.matches ? 180 : 260;
+    ghost.removeAttribute('id'); ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id')); ghost.querySelectorAll('video').forEach(v => v.remove());
+    ghost.inert = true; ghost.setAttribute('aria-hidden', 'true'); ghost.classList.add('closing'); ghost.style.pointerEvents = 'none';
+    const pane = ghost.firstElementChild, st = sheet.firstElementChild.scrollTop;
+    Object.assign(pane.style, { animation: 'none', transition: 'none' });
+    document.body.appendChild(ghost); pane.scrollTop = st; void ghost.offsetWidth;
+    ghost.style.transition = `background-color ${dur}ms ease-out`; ghost.style.backgroundColor = 'rgba(18,26,20,0)';
+    pane.style.transition = reduceMotion.matches ? `opacity ${dur}ms ease-out` : `transform ${dur}ms cubic-bezier(.4,0,.9,.6)`;
+    if (reduceMotion.matches) pane.style.opacity = '0'; else pane.style.transform = 'translate3d(0,100%,0)';
+    setTimeout(() => ghost.remove(), dur + 30);
+  }
   sheetCleanup?.(); sheetCleanup = null; sheet.hidden = true; sheet.innerHTML = '';
 }
 sheet.addEventListener('click', e => { if (e.target === sheet || e.target.closest('[data-close]')) closeSheet(); });
@@ -133,6 +147,9 @@ function route() {
   timers.forEach(clearInterval); timers = [];
   if (!sheet.hidden) closeSheet();
   const [name = 'home', arg] = (location.hash.replace(/^#\/?/, '').replace(/\?.*/, '') || 'home').split('/');
+  const cur = { name: name === 'done' || routes[name] ? name : 'home', arg }, t = navNext || navKind(lastRoute, cur);
+  navNext = null; lastRoute = cur;
+  if (t && !t.handled) navTransition(t);
   const tab = name === 'done' ? 'log' : (routes[name] ? name : 'home');
   document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
   (name === 'log' && arg ? renderDetail : (routes[name] || renderHome))(arg && decodeURIComponent(arg));
@@ -293,7 +310,7 @@ function stackCards(list) {
   const [first, ...rest] = list;
   return [first, ...rest.filter(s => s.user).reverse(), ...rest.filter(s => !s.user)].slice(0, 4);
 }
-function refreshStack(e) { const b = view.querySelector(`.ex[data-id="${CSS.escape(e.id)}"] .stills`); if (b) b.outerHTML = stillsGrid(e); }
+function refreshStack(e) { view.querySelectorAll(`.ex[data-id="${CSS.escape(e.id)}"] .stills, .dstills[data-id="${CSS.escape(e.id)}"] .stills`).forEach(b => { b.outerHTML = stillsGrid(e); }); }
 function pickPhoto() {
   return new Promise(res => { const inp = $('#photopick'); inp.value = ''; inp.onchange = () => res(inp.files[0] || null); inp.click(); });
 }
@@ -351,6 +368,8 @@ function openStills(e, at = 0, quiet = false) {
     : `<div class="empty">No form stills saved for this exercise yet.</div>${addBtn}`;
   openSheet(`<div class="sthead"><h3>${esc(e.name)} · Form stills</h3><button class="iconbtn x" data-close aria-label="Close">✕</button></div>${body}`, p => {
     $('#stadd', p).onclick = () => addStillPhoto(e);
+    const hooks = { cancelLP: () => {} };
+    swipeDownToDismiss(p, { blocked: () => !!p.querySelector('.lpmenu'), onDrag: () => hooks.cancelLP() });
     const tr = $('#stv', p); if (!tr) return;
     if (at) tr.scrollLeft = at * tr.clientWidth;
     const cur = () => Math.round(tr.scrollLeft / tr.clientWidth);
@@ -363,6 +382,7 @@ function openStills(e, at = 0, quiet = false) {
     // Press and hold (500ms) a photo -> small menu: Delete photo / Cancel. A long press never advances or closes.
     let lp = null, suppressClick = false;
     const cancelLP = () => { if (lp) { clearTimeout(lp.t); lp = null; } };
+    hooks.cancelLP = cancelLP;
     const closeMenu = () => p.querySelector('.lpmenu')?.remove();
     const openMenu = fig => {
       closeMenu(); navigator.vibrate?.(12);
@@ -392,6 +412,63 @@ function openStills(e, at = 0, quiet = false) {
     };
   });
   const pane = $('.pane', sheet); pane?.classList.add('stillsheet'); if (quiet && pane) pane.style.animation = 'none';
+}
+
+/* Swipe a bottom sheet down to dismiss it (used by the Form stills viewer). The pane follows the finger 1:1 and the
+   backdrop fades; let go past 25% of its height or with a quick downward flick and it slides away and closes (same as X),
+   otherwise it springs back. The axis is locked on the first ~8px of movement: sideways = photo swiping (untouched),
+   down = dismiss drag, up = normal scrolling. Edge (x<=24) starts are left to the iOS-style back swipe. */
+function swipeDownToDismiss(pane, { blocked = () => false, onDrag = () => {} } = {}) {
+  const back = pane.parentElement, LOCK_PX = 8;
+  let d = null;
+  const set = (y, anim) => {
+    const dur = reduceMotion.matches ? 0 : 260;
+    pane.style.transition = back.style.transition = anim && dur ? `transform ${dur}ms cubic-bezier(.22,.8,.24,1), opacity ${dur}ms ease-out` : 'none';
+    pane.style.transform = y ? `translate3d(0,${y}px,0)` : '';
+    back.style.backgroundColor = y ? `rgba(18,26,20,${(.45 * Math.max(.15, 1 - y / pane.offsetHeight)).toFixed(3)})` : '';
+    if (anim) back.style.transition = dur ? `background-color ${dur}ms ease-out` : 'none';
+    return dur;
+  };
+  pane.addEventListener('touchstart', ev => {
+    d = null;
+    if (ev.touches.length !== 1 || blocked()) return;
+    const t = ev.touches[0];
+    if (t.clientX <= 24 || pane.scrollTop > 0) return;   // edge back-swipe / scrolled sheet content keep their behaviour
+    d = { x: t.clientX, y: t.clientY, lock: null, dy: 0, pts: [[performance.now(), t.clientY]] };
+    pane.style.animation = 'none';
+  }, { passive: true });
+  pane.addEventListener('touchmove', ev => {
+    if (!d) return;
+    const t = ev.touches[0], dx = t.clientX - d.x, dy = t.clientY - d.y;
+    if (!d.lock) {
+      if (Math.abs(dx) < LOCK_PX && Math.abs(dy) < LOCK_PX) return;
+      d.lock = dy > 0 && Math.abs(dy) > Math.abs(dx) && !blocked() ? 'v' : 'x';
+      if (d.lock === 'x') { d = null; return; }   // horizontal photo swipe or upward scroll: not ours
+      onDrag();                                    // e.g. cancel a pending press-and-hold
+      d.y0 = t.clientY;                            // start following from here so the pane doesn't jump
+    }
+    if (ev.cancelable) ev.preventDefault();        // no page scroll / pull-to-refresh / photo scroll while dragging
+    ev.stopPropagation();
+    d.dy = Math.max(0, t.clientY - d.y0);
+    const now = performance.now(); d.pts.push([now, t.clientY]); while (d.pts.length > 2 && now - d.pts[0][0] > 100) d.pts.shift();
+    set(d.dy, false);
+  }, { passive: false });
+  const end = ev => {
+    const s = d; d = null; if (!s || s.lock !== 'v') return;
+    const [t0, y0] = s.pts[0], [t1, y1] = s.pts[s.pts.length - 1];
+    const v = t1 > t0 ? (y1 - y0) / (t1 - t0) : 0;   // px/ms over the last ~100ms
+    const h = pane.offsetHeight;
+    if (ev.type === 'touchend' && (s.dy > h * .25 || (v > .5 && s.dy > 24))) {
+      const dur = set(h + 40, true);
+      sheet.dataset.dismissing = '1';
+      setTimeout(() => { delete sheet.dataset.dismissing; back.style.backgroundColor = back.style.transition = ''; if (pane.isConnected) closeSheet(false); }, dur);
+    } else {
+      const dur = set(0, true);
+      setTimeout(() => { if (!d) { pane.style.transition = back.style.transition = ''; } }, dur + 20);
+    }
+  };
+  pane.addEventListener('touchend', end);
+  pane.addEventListener('touchcancel', end);
 }
 
 /* Press-and-hold (or grip) drag to reorder, touch friendly. */
@@ -458,7 +535,7 @@ function renderDetail(id) {
   view.innerHTML = `
   <div class="topbar"><a class="iconbtn" href="#/log" aria-label="Back">${I.back}</a><h2>Log workout</h2><span></span></div>
   <div class="extitle">${esc(e.name)}</div>
-  <div class="vidbox" id="vb"><img src="${v.img}" alt=""><span class="play big c">${I.play}</span><span class="cap">Form video · ${v.dur}</span><button class="cover" aria-label="Play form video"></button></div>
+  <div class="vidwrap"><div class="vidbox" id="vb"><img src="${v.img}" alt=""><span class="play big c">${I.play}</span><span class="cap">Form video · ${v.dur}</span><button class="cover" aria-label="Play form video"></button></div><div class="dstills" data-id="${esc(e.id)}">${stillsGrid(e)}</div></div>
   ${['sets', 'reps', 'weight'].map(k => `<div class="field card" data-k="${k}"><span class="k">${k[0].toUpperCase() + k.slice(1)}</span><span class="v">${fmtW(e[k])}</span>${k === 'weight' ? '<span class="u">kg</span>' : ''}<button class="iconbtn ed" aria-label="Edit ${k}">${I.pencil}</button></div>`).join('')}
   <div class="rest"><span class="clock">${I.clock}</span><button id="rt" style="border:0;background:none;text-align:left;padding:0;cursor:pointer;flex:1"><div class="lbl">Rest timer</div><div class="t" id="rtv">${rest.dur}s</div></button><button class="iconbtn" id="rr" aria-label="Reset rest timer" style="color:var(--acc-d)">${I.reset}</button></div>
   <button class="btn block" id="save">Save set</button>
@@ -475,7 +552,10 @@ function renderDetail(id) {
   drawSets();
   const commit = () => { e.done = e.log.length >= e.sets; if (e.log.length) startWorkout(); save(); };
   $('#sl').onclick = ev => { const b = ev.target.closest('.xbtn'); if (!b) return; e.log.splice(+b.dataset.i, 1); commit(); drawSets(); };
-  $('#vb .cover').onclick = () => { $('#vb').innerHTML = `<video src="${v.src}" controls playsinline autoplay muted loop></video>`; };
+  $('#vb .cover').onclick = () => { $('#vb').innerHTML = `<video src="${v.src}" controls playsinline autoplay muted loop></video>`; $('.vidwrap').classList.add('playing'); };
+  // Form photos: small fanned stack over the video's bottom-right corner (a sibling of the video, so tapping it
+  // never plays/pauses it); lifted above the native control bar once the video is playing.
+  $('.dstills').addEventListener('click', ev => { if (!ev.target.closest('.stills')) return; ev.preventDefault(); ev.stopPropagation(); openStills(e); });
   view.querySelectorAll('.field').forEach(f => f.querySelector('.ed').onclick = () => {
     const k = f.dataset.k, span = f.querySelector('.v');
     if (f.querySelector('input')) return;
@@ -646,77 +726,121 @@ function blockedStart(t) {
   return false;
 }
 let sw = null;
-/* Tab-swipe animation (finger swipe between top-level tabs only; tab-bar taps and edge-back are unchanged).
-   While dragging, the page follows the finger 1:1 with no fade. On release the old page (a frozen snapshot) and the
-   new page slide together like a carousel, continuing from where the finger let go, with a decelerating ease. */
+/* Screen transitions (iOS-like). Every route change goes through navTransition():
+   - tab change (tab bar tap or finger swipe): quick crossfade, 240ms ease-in-out, with a small parallax shift (10% of the
+     width) — the new screen drifts in from the swipe side and fades in ON TOP of the old one, which fades out underneath,
+     so there is never a blank/see-through frame. While the finger drags, the page follows 1:1 and fades a little, so
+     letting go flows straight into the crossfade.
+   - push (today's workout -> exercise, -> summary): new screen slides in from the right over the old one, which shifts
+     30% left and dims slightly. pop (Back button / edge swipe) is the exact reverse, continuing from the finger.
+   - reduced motion: plain 200ms crossfade, no movement.
+   The old screen is a frozen snapshot (ghost); the new one stays hidden until rendered and its first screenful of
+   thumbnails has decoded (max ~120ms), so nothing pops in mid-transition. Only transform + opacity animate. */
 const TAB_EASE = 'cubic-bezier(.22,.8,.24,1)';
+const EASE_IO = 'cubic-bezier(.42,0,.58,1)', EASE_PUSH = 'cubic-bezier(.2,.85,.25,1)';
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
-let tabAnim = null;
-function tabDrag(x) { view.style.transition = 'none'; view.style.willChange = 'transform'; view.style.opacity = ''; view.style.transform = x ? `translate3d(${x}px,0,0)` : ''; }
+let tabAnim = null, navNext = null, lastRoute = null;
+const dragOpacity = x => String(1 - .2 * Math.min(1, Math.abs(x) / innerWidth));
+function tabDrag(x) { view.style.transition = 'none'; view.style.willChange = 'transform,opacity'; view.style.transform = x ? `translate3d(${x}px,0,0)` : ''; view.style.opacity = x ? dragOpacity(x) : ''; }
 function finishTabAnim() {
   if (!tabAnim) return;
   const a = tabAnim; tabAnim = null;
-  clearTimeout(a.t); clearTimeout(a.wait); a.mo?.disconnect(); a.ghost.remove();
-  (a.lifted || []).forEach(([el, home]) => { el.style.transition = ''; el.style.transform = ''; if (home) { if (home.isConnected) home.appendChild(el); else el.remove(); } else el.remove(); });
-  view.style.transition = ''; view.style.transform = ''; view.style.opacity = ''; view.style.willChange = ''; view.style.visibility = '';
+  clearTimeout(a.t); clearTimeout(a.wait); a.mo?.disconnect(); a.ghost.remove(); a.dim?.remove();
+  (a.lifted || []).forEach(([el, home]) => { el.style.transition = el.style.transform = el.style.opacity = ''; if (home?.isConnected) home.appendChild(el); else el.remove(); });
+  Object.assign(view.style, { transition: '', transform: '', opacity: '', willChange: '', visibility: '', position: '', zIndex: '', boxShadow: '', background: '' });
 }
 function tabSpringBack() {
-  view.style.transition = `transform .28s ${TAB_EASE}`; view.style.transform = '';
+  view.style.transition = `transform .28s ${TAB_EASE}, opacity .28s ${TAB_EASE}`; view.style.transform = ''; view.style.opacity = '';
   setTimeout(() => { if (!sw && !tabAnim) { view.style.transition = ''; view.style.willChange = ''; } }, 300);
 }
-function tabSwipeTo(next, dir, fromX) {
+/** What kind of transition a route change gets. */
+function navKind(prev, cur) {
+  if (!prev || (prev.name === cur.name && (prev.arg || '') === (cur.arg || ''))) return null;
+  const sub = r => r.name === 'done' || (r.name === 'log' && !!r.arg), tabOf = r => r.name === 'done' ? 'log' : r.name;
+  if (tabOf(prev) === tabOf(cur)) return { kind: sub(prev) && !sub(cur) ? 'pop' : 'push' };
+  if (sub(cur)) return { kind: 'push' };   // e.g. Home "Log a set" -> exercise
+  const i = TAB_ORDER.indexOf(tabOf(prev)), j = TAB_ORDER.indexOf(tabOf(cur));
+  return { kind: 'tab', dir: j > i ? 1 : -1 };
+}
+function navTransition(t) {
   finishTabAnim();
-  if (reduceMotion.matches) { view.style.transition = ''; view.style.transform = ''; goTab(next); return; }
-  const W = innerWidth, r = view.getBoundingClientRect(), cs = getComputedStyle(view);
+  const kind = reduceMotion.matches ? 'fade' : t.kind, W = innerWidth, fromX = t.fromX || 0, dir = t.dir || 1;
+  const r = view.getBoundingClientRect(), cs = getComputedStyle(view), fromO = +(view.style.opacity || 1);
   // Snapshot of the outgoing page, pinned exactly where it is on screen (ids stripped so lookups hit the real view).
   const ghost = view.cloneNode(true);
   ghost.removeAttribute('id'); ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
   ghost.querySelectorAll('video').forEach(v => v.remove());
   ghost.setAttribute('aria-hidden', 'true'); ghost.inert = true;
-  Object.assign(ghost.style, { position: 'fixed', top: r.top + 'px', left: (r.left - fromX) + 'px', width: r.width + 'px', margin: '0', padding: cs.padding, boxSizing: 'border-box', pointerEvents: 'none', zIndex: '1', transition: 'none', transform: `translate3d(${fromX}px,0,0)`, willChange: 'transform' });
+  Object.assign(ghost.style, { position: 'fixed', top: r.top + 'px', left: (r.left - fromX) + 'px', width: r.width + 'px', margin: '0', padding: cs.padding, boxSizing: 'border-box', pointerEvents: 'none', zIndex: kind === 'pop' ? '3' : '1', transition: 'none', transform: `translate3d(${fromX}px,0,0)`, opacity: String(fromO), willChange: 'transform,opacity', background: 'var(--bg)', minHeight: (innerHeight - r.top) + 'px' });
+  if (kind === 'pop') ghost.style.boxShadow = '-8px 0 24px rgba(0,0,0,.12)';
   document.body.appendChild(ghost);
-  view.style.transition = 'none'; view.style.transform = `translate3d(${dir * W + fromX}px,0,0)`;   // new page waits just off-screen, touching the old one
-  view.style.visibility = 'hidden';   // until the new tab has rendered, the view still holds the OLD page: never show that copy
-  const a = tabAnim = { ghost, gfabs: [...ghost.querySelectorAll(':scope > .fab')] };
-  a.gfabs.forEach(el => { el.style.transition = 'none'; el.style.transform = `translate3d(${fromX}px,0,0)`; document.body.appendChild(el); });
-  a.lifted = a.gfabs.map(el => [el, null]);
+  view.style.transition = 'none'; view.style.visibility = 'hidden';   // until the new screen has rendered, never show the old copy in #view
+  view.style.position = 'relative'; view.style.zIndex = kind === 'pop' ? '1' : '2';
+  const a = tabAnim = { ghost, lifted: [] };
+  if (kind === 'tab' && fromX) {   // keep the released screen moving while the new one renders: no stall after letting go
+    void ghost.offsetWidth; ghost.style.transition = `transform 300ms ${TAB_EASE}`; ghost.style.transform = `translate3d(${fromX - dir * W * .1}px,0,0)`;
+  }
+  // position:fixed bits (Library "+" button) would be laid out against a transformed page's box (off-screen) and pop
+  // in at the end; lift them out to <body> for the transition so they stay in their real spot and move with their page.
+  const gfabs = [...ghost.querySelectorAll(':scope > .fab')];
+  gfabs.forEach(el => { el.style.transition = 'none'; el.style.transform = `translate3d(${fromX}px,0,0)`; el.style.opacity = String(fromO); el.style.zIndex = '9'; document.body.appendChild(el); a.lifted.push([el, null]); });
   const go = () => {
     if (tabAnim !== a || a.started) return; a.started = true; a.mo?.disconnect(); clearTimeout(a.wait);
-    view.style.visibility = '';
-    view.style.transition = 'none'; view.style.transform = `translate3d(${dir * W + fromX}px,0,0)`;
+    let dur, vFrom, vTo, gTo, vOpFrom = 1, gOpTo = 1, trV, trG, dimFrom = null, dimTo = 0;
+    if (kind === 'tab') {
+      const P = W * .1; dur = 240;
+      vFrom = dir * P; vTo = 0; vOpFrom = fromX ? .2 : 0; gTo = fromX - dir * P; gOpTo = 0;   // swipe: new screen already faintly there
+      trV = `transform ${dur}ms ${EASE_IO}, opacity ${dur}ms ${EASE_IO}`;
+      trG = `transform ${dur}ms ${EASE_IO}, opacity ${dur}ms cubic-bezier(.55,0,1,.45)`;   // old screen stays solid until the new one covers it
+    } else if (kind === 'push') {
+      dur = 380; vFrom = W; vTo = 0; gTo = -W * .3; dimFrom = 0; dimTo = .1;
+      trV = trG = `transform ${dur}ms ${EASE_PUSH}`;
+      view.style.boxShadow = '-8px 0 24px rgba(0,0,0,.12)';
+    } else if (kind === 'pop') {
+      const left = 1 - Math.min(1, Math.max(0, fromX) / W);
+      dur = Math.round(Math.max(200, 340 * left)); vFrom = -W * .3 * left; vTo = 0; gTo = W; dimFrom = .1 * left; dimTo = 0;
+      trV = trG = `transform ${dur}ms ${EASE_PUSH}`;
+    } else {   // fade (reduced motion)
+      dur = 200; vFrom = vTo = 0; gTo = fromX; vOpFrom = 0; gOpTo = 0;
+      trV = trG = `opacity ${dur}ms ${EASE_IO}`;
+    }
+    if (dimFrom !== null) {
+      const dim = a.dim = document.createElement('div');
+      Object.assign(dim.style, { position: 'fixed', inset: '0', background: '#000', opacity: String(dimFrom), zIndex: '2', pointerEvents: 'none', transition: 'none', willChange: 'opacity' });
+      if (kind === 'push') { ghost.style.zIndex = '1'; view.style.zIndex = '3'; }
+      document.body.appendChild(dim);
+    }
+    view.style.visibility = ''; view.style.willChange = 'transform,opacity'; view.style.background = 'var(--bg)';
+    view.style.transform = `translate3d(${vFrom}px,0,0)`; view.style.opacity = String(vOpFrom);
+    const vfabs = [...view.querySelectorAll(':scope > .fab')];
+    vfabs.forEach(el => { el.style.transition = 'none'; el.style.transform = `translate3d(${vFrom}px,0,0)`; el.style.opacity = String(vOpFrom); document.body.appendChild(el); a.lifted.push([el, view]); });
     void view.offsetWidth;
-    const dur = Math.round(Math.max(180, Math.min(320, 340 * Math.abs(dir * W + fromX) / W)));
-    const tr = `transform ${dur}ms ${TAB_EASE}`;
-    // position:fixed bits (the Library "+" button) would be laid out against the moving page's box while it has a transform,
-    // i.e. off the bottom of the screen, then pop in when the slide ends (the Home->Library flicker). Lift them out to
-    // <body> for the slide so they sit in their real spot and slide along with their page.
-    a.lifted = a.lifted || [];
-    const lift = (el, home, from, to) => { el.style.transition = 'none'; el.style.transform = `translate3d(${from}px,0,0)`; document.body.appendChild(el); a.lifted.push([el, home]); void el.offsetWidth; el.style.transition = tr; el.style.transform = `translate3d(${to}px,0,0)`; };
-    view.querySelectorAll(':scope > .fab').forEach(el => lift(el, view, dir * W + fromX, 0));
-    a.gfabs.forEach(el => { el.style.transition = tr; el.style.transform = `translate3d(${-dir * W}px,0,0)`; });
-    view.style.transition = tr; ghost.style.transition = tr;
-    view.style.transform = 'translate3d(0,0,0)'; ghost.style.transform = `translate3d(${-dir * W}px,0,0)`;
+    view.style.transition = trV; ghost.style.transition = trG;
+    view.style.transform = `translate3d(${vTo}px,0,0)`; view.style.opacity = '1';
+    if (!(kind === 'tab' && fromX)) ghost.style.transform = `translate3d(${gTo}px,0,0)`; else ghost.style.transition = trG.replace(/transform [^,]+, /, `transform 300ms ${TAB_EASE}, `);
+    ghost.style.opacity = String(gOpTo === 1 ? fromO : 0);
+    vfabs.forEach(el => { el.style.transition = trV; el.style.transform = `translate3d(${vTo}px,0,0)`; el.style.opacity = '1'; });
+    gfabs.forEach(el => { el.style.transition = trG; el.style.transform = `translate3d(${gTo}px,0,0)`; el.style.opacity = String(gOpTo === 1 ? fromO : 0); });
+    if (a.dim) { a.dim.style.transition = `opacity ${dur}ms ${EASE_PUSH}`; a.dim.style.opacity = String(dimTo); }
     a.t = setTimeout(finishTabAnim, dur + 40);
   };
-  // Start once the new tab has rendered (some renders await IndexedDB), with a short fallback.
-  // Then give its first screenful of pictures (Library thumbnails) up to ~120ms to decode so they don't pop in mid-slide.
+  // Start once the new screen has rendered (some renders await IndexedDB), with a short fallback; then give its first
+  // screenful of pictures up to ~120ms to decode.
   const ready = () => {
     if (tabAnim !== a || a.ready) return; a.ready = true; a.mo?.disconnect();
     const imgs = [...view.querySelectorAll('img')].filter(i => i.offsetTop < innerHeight * 1.2 && !(i.complete && i.naturalWidth)).slice(0, 8);
     if (!imgs.length) return go();
-    clearTimeout(a.wait); a.wait = setTimeout(go, 120);
+    clearTimeout(a.wait); a.wait = setTimeout(go, 90);
     Promise.all(imgs.map(i => i.decode().catch(() => {}))).then(go);
   };
-  a.mo = new MutationObserver(ready);   // microtask: runs before the new page is ever painted
+  a.mo = new MutationObserver(ready);   // microtask: runs before the new screen is ever painted
   a.mo.observe(view, { childList: true });
   a.wait = setTimeout(go, 150);
-  goTab(next);
 }
-function slideStyle(el, x, anim) { el.style.transition = anim ? 'transform .22s ease-out, opacity .22s ease-out' : 'none'; el.style.transform = x ? `translate3d(${x}px,0,0)` : ''; el.style.opacity = x ? String(Math.max(.4, 1 - Math.abs(x) / innerWidth * .8)) : ''; }
-function slideIn(fromX) {
-  view.style.transition = 'none'; view.style.transform = `translate3d(${fromX}px,0,0)`; view.style.opacity = '.4';
-  requestAnimationFrame(() => requestAnimationFrame(() => { slideStyle(view, 0, true); setTimeout(() => { view.style.transition = ''; }, 260); }));
-}
+/** Gesture-driven: start the transition right away (old screen frozen where the finger left it), then change route. */
+function navNow(t, change) { navTransition(t); navNext = { handled: true }; change(); }
+function tabSwipeTo(next, dir, fromX) { navNow({ kind: 'tab', dir, fromX }, () => goTab(next)); }
+function slideStyle(el, x, anim) { el.style.transition = anim ? 'transform .22s ease-out, opacity .22s ease-out' : 'none'; el.style.transform = x ? `translate3d(${x}px,0,0)` : ''; el.style.opacity = x && el !== view ? String(Math.max(.4, 1 - Math.abs(x) / innerWidth * .8)) : ''; }
 document.addEventListener('touchstart', e => {
   finishTabAnim();
   if (e.touches.length !== 1 || document.querySelector('.ex.dragging')) { sw = null; return; }
@@ -745,8 +869,8 @@ function endSwipe() {
   const clear = adx > MIN_DX && adx > RATIO * Math.abs(s.dy) && (dt < 700 || adx > innerWidth * .35);
   if (s.edge) {
     if (clear && s.dx > 0) {
-      slideStyle(s.el, innerWidth, true);
-      setTimeout(() => { s.el.style.transform = ''; s.el.style.opacity = ''; const wasSheet = !sheet.hidden; goBack(); if (!wasSheet) slideIn(-innerWidth * .3); }, 180);
+      if (!sheet.hidden) { slideStyle(s.el, innerWidth, true); setTimeout(() => closeSheet(false), 180); }
+      else navNow({ kind: 'pop', fromX: Math.max(0, s.dx) }, goBack);   // pop continues from the finger
     } else slideStyle(s.el, 0, true);
     return;
   }
@@ -763,7 +887,7 @@ document.addEventListener('touchcancel', () => { if (sw?.edge) { if (sw.el) slid
 if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) document.documentElement.dataset.standalone = '1';
 load();
 route();
-loadUserStills().then(() => { if (userStills.size && curRoute().name === 'log' && !curRoute().arg) view.querySelectorAll('.ex').forEach(li => { const ex = exById(li.dataset.id); if (ex) refreshStack(ex); }); });
+loadUserStills().then(() => { if (userStills.size && curRoute().name === 'log') view.querySelectorAll('.ex, .dstills').forEach(li => { const ex = exById(li.dataset.id); if (ex) refreshStack(ex); }); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW register failed', err));
