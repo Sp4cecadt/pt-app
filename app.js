@@ -172,7 +172,7 @@ async function renderHome() {
   $('#start').onclick = e => { if (W().finishedAt) { e.preventDefault(); location.hash = '#/done'; return; } startWorkout(); };
   $('#me').onclick = () => openSheet(`<h3>Your name</h3><input type="text" id="nm" value="${esc(S.user.name)}" autocomplete="given-name"><div class="btns"><button class="btn ghost" id="col">${I.palette.replace('<svg', '<svg width="20" height="20"')} App colour: ${esc((THEMES.find(t => t.id === currentTheme()) || THEMES[0]).name)}</button></div><div class="btns"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="ok">Save</button></div>`,
     p => { $('#col', p).onclick = () => openThemePicker(); $('#ok', p).onclick = () => { S.user.name = $('#nm', p).value.trim() || 'Coach'; save(); closeSheet(); renderHome(); }; });
-  $('#reset').onclick = async () => { if (!confirm('Reset all demo data and delete uploaded videos on this phone?')) return; await clearVideos().catch(() => {}); S = seedState(); save(); toast('Demo data reset'); renderHome(); };
+  $('#reset').onclick = async () => { if (!confirm('Reset all demo data and delete uploaded videos on this phone?')) return; await clearVideos().catch(() => {}); clearUserStills(); S = seedState(); save(); toast('Demo data reset'); renderHome(); };
 }
 
 /* ---------- Library ---------- */
@@ -270,24 +270,89 @@ function renderLog() {
 /* ---------- Form stills ----------
    List control: the stills as small overlapping photos in a square block right of the video thumbnail, exactly as
    tall as it. One card per still (max 4) so the stack shows how many there are; stills[0] is the top/cover card and
-   the viewer opens on it. No stills = a stack of 4 empty dashed cards. Tap = stills viewer. */
+   the viewer opens on it. No stills = a stack of 4 empty dashed cards. Tap = stills viewer.
+   In the viewer the user can add their own photos (kept on this phone in IndexedDB, downscaled to ~800px JPEG) and
+   press-and-hold any photo to delete it. Built-in/coach stills are hidden rather than deleted (S.hiddenStills), so
+   placeholders can be fully replaced by the user's own photos. */
+const userStills = new Map();   // exId -> [{ id, src: objectURL, caption, user: true, createdAt }]
+function clearUserStills() { userStills.forEach(l => l.forEach(s => URL.revokeObjectURL(s.src))); userStills.clear(); }
+async function loadUserStills() {
+  const recs = (await allVideos().catch(() => [])).filter(r => r.kind === 'still').sort((a, b) => a.createdAt - b.createdAt);
+  const had = new Map([...userStills.values()].flat().map(s => [s.id, s])); userStills.clear();   // keep URLs already in use
+  for (const r of recs) { if (!userStills.has(r.exId)) userStills.set(r.exId, []); userStills.get(r.exId).push(had.get(r.id) || { id: r.id, src: URL.createObjectURL(r.blob), caption: 'Your photo', user: true, createdAt: r.createdAt }); had.delete(r.id); }
+  had.forEach(s => URL.revokeObjectURL(s.src));
+}
+/** All stills for an exercise as shown: built-in/coach stills (minus hidden ones), then the user's photos (appended). */
+function allStills(e) {
+  const hid = S.hiddenStills?.[e.id] || [];
+  return [...stillsFor(e).map((s, i) => ({ ...s, key: 'b' + i })).filter(s => !hid.includes(s.key)), ...(userStills.get(e.id) || []).map(s => ({ ...s, key: s.id }))];
+}
+/** Up to 4 cards for the stack: stills[0] on top, then the newest user photos, then the rest. */
+function stackCards(list) {
+  if (!list.length) return [];
+  const [first, ...rest] = list;
+  return [first, ...rest.filter(s => s.user).reverse(), ...rest.filter(s => !s.user)].slice(0, 4);
+}
+function refreshStack(e) { const b = view.querySelector(`.ex[data-id="${CSS.escape(e.id)}"] .stills`); if (b) b.outerHTML = stillsGrid(e); }
+function pickPhoto() {
+  return new Promise(res => { const inp = $('#photopick'); inp.value = ''; inp.onchange = () => res(inp.files[0] || null); inp.click(); });
+}
+async function shrinkPhoto(file, max = 800) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return await new Promise(r => c.toBlob(r, 'image/jpeg', .82));
+  } finally { URL.revokeObjectURL(url); }
+}
+async function addStillPhoto(e) {
+  const file = await pickPhoto(); if (!file) return;
+  let blob; try { blob = await shrinkPhoto(file); } catch { blob = null; }
+  if (!blob) { toast('Couldn’t read that photo'); return; }
+  const rec = { id: 'still-' + Date.now().toString(36), kind: 'still', exId: e.id, blob, createdAt: Date.now() };
+  await putVideo(rec);
+  if (!userStills.has(e.id)) userStills.set(e.id, []);
+  userStills.get(e.id).push({ id: rec.id, src: URL.createObjectURL(blob), caption: 'Your photo', user: true, createdAt: rec.createdAt });
+  refreshStack(e);
+  if (!sheet.hidden) openStills(e, allStills(e).length - 1, true);   // jump to the new photo
+  toast('Photo added');
+}
+async function deleteStill(e, s) {
+  if (s.user) {
+    await delVideo(s.id).catch(() => {});
+    const l = userStills.get(e.id) || []; const i = l.findIndex(x => x.id === s.id);
+    if (i >= 0) { URL.revokeObjectURL(l[i].src); l.splice(i, 1); }
+  } else {
+    S.hiddenStills ||= {}; const h = S.hiddenStills[e.id] ||= [];
+    if (!h.includes(s.key)) h.push(s.key); save();
+  }
+  refreshStack(e);
+  toast('Photo deleted');
+}
 function stillsGrid(e) {
-  const st = stillsFor(e), n = st.length;
+  const st = allStills(e), n = st.length;
   // DOM order bottom -> top, so stills[0] is the last child (painted on top).
-  const cells = n ? st.slice(0, 4).map((s, i) => `<span class="sq" data-i="${i}"><img src="${esc(s.src)}" alt="" loading="lazy" decoding="async"></span>`).reverse().join('')
+  const cells = n ? stackCards(st).map((s, i) => `<span class="sq" data-i="${i}" data-key="${esc(s.key)}"><img src="${esc(s.src)}" alt="" loading="lazy" decoding="async"></span>`).reverse().join('')
     : '<span class="sq none"></span>'.repeat(4);
   return `<button class="stills${n ? '' : ' none'}" data-count="${n}" aria-label="${n ? `Form stills for ${esc(e.name)}: ${n} key positions` : `No form stills for ${esc(e.name)}`}">${cells}</button>`;
 }
-function openStills(e) {
+function openStills(e, at = 0, quiet = false) {
   if (!e) return;
-  const st = stillsFor(e);
+  const st = allStills(e);
+  at = Math.max(0, Math.min(st.length - 1, at));
+  const addBtn = `<button class="btn ghost block stadd" id="stadd">${I.plus.replace('<svg', '<svg width="20" height="20"')} Add photo</button>`;
   const body = st.length ? `
-    <div class="stv" id="stv" data-noswipe>${st.map((s, i) => `<figure class="stf" data-i="${i}"><div class="stimg"><img src="${esc(s.src)}" alt="${esc(s.caption)}" draggable="false">${s.placeholder ? '<span class="phb">Placeholder</span>' : ''}<span class="stn">${i + 1}/${st.length}</span></div><figcaption>${esc(s.caption)}</figcaption></figure>`).join('')}</div>
-    <div class="stnav"><button class="iconbtn" id="stp" aria-label="Previous still">${I.back}</button><div class="dots">${st.map((_, i) => `<button class="dot${i ? '' : ' on'}" data-i="${i}" aria-label="Still ${i + 1}"></button>`).join('')}</div><button class="iconbtn flip" id="stn" aria-label="Next still">${I.back}</button></div>
-    ${st.some(s => s.placeholder) ? '<p class="sub sm">Placeholder stock photos. Your coach can add real stills of each key position later.</p>' : ''}`
-    : '<div class="empty">No form stills saved for this exercise yet.</div>';
+    <div class="stv" id="stv" data-noswipe>${st.map((s, i) => `<figure class="stf" data-i="${i}"><div class="stimg"><img src="${esc(s.src)}" alt="${esc(s.caption)}" draggable="false">${s.placeholder ? '<span class="phb">Placeholder</span>' : ''}${s.user ? '<span class="phb you">Your photo</span>' : ''}<span class="stn">${i + 1}/${st.length}</span></div><figcaption>${esc(s.caption)}</figcaption></figure>`).join('')}</div>
+    <div class="stnav"><button class="iconbtn" id="stp" aria-label="Previous still">${I.back}</button><div class="dots">${st.map((_, i) => `<button class="dot${i === at ? ' on' : ''}" data-i="${i}" aria-label="Still ${i + 1}"></button>`).join('')}</div><button class="iconbtn flip" id="stn" aria-label="Next still">${I.back}</button></div>
+    ${addBtn}
+    <p class="sub sm">${st.some(s => s.placeholder) ? 'Placeholder stock photos for now. ' : ''}Press and hold a photo to delete it.</p>`
+    : `<div class="empty">No form stills saved for this exercise yet.</div>${addBtn}`;
   openSheet(`<div class="sthead"><h3>${esc(e.name)} · Form stills</h3><button class="iconbtn x" data-close aria-label="Close">✕</button></div>${body}`, p => {
+    $('#stadd', p).onclick = () => addStillPhoto(e);
     const tr = $('#stv', p); if (!tr) return;
+    if (at) tr.scrollLeft = at * tr.clientWidth;
     const cur = () => Math.round(tr.scrollLeft / tr.clientWidth);
     const go = i => tr.scrollTo({ left: Math.max(0, Math.min(st.length - 1, i)) * tr.clientWidth, behavior: 'smooth' });
     const sync = () => p.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('on', i === cur()));
@@ -295,9 +360,38 @@ function openStills(e) {
     $('#stp', p).onclick = () => go(cur() - 1);
     $('#stn', p).onclick = () => go(cur() + 1);
     $('.dots', p).onclick = ev => { const d = ev.target.closest('.dot'); if (d) go(+d.dataset.i); };
-    tr.onclick = ev => { if (ev.target.closest('.stimg')) go(cur() + 1 >= st.length ? 0 : cur() + 1); };   // tap a still = next
+    // Press and hold (500ms) a photo -> small menu: Delete photo / Cancel. A long press never advances or closes.
+    let lp = null, suppressClick = false;
+    const cancelLP = () => { if (lp) { clearTimeout(lp.t); lp = null; } };
+    const closeMenu = () => p.querySelector('.lpmenu')?.remove();
+    const openMenu = fig => {
+      closeMenu(); navigator.vibrate?.(12);
+      const i = +fig.dataset.i, s = st[i];
+      fig.querySelector('.stimg').insertAdjacentHTML('beforeend', `<div class="lpmenu" role="dialog" aria-label="Photo options"><div class="lpbox"><div class="lpt">${s.user ? 'Your photo' : 'This still'}</div><button class="lpdel" id="lpdel">Delete photo</button><button class="lpcan" id="lpcan">Cancel</button></div></div>`);
+      // The finger is still down when the menu appears; the click that follows lifting it must not hit Delete.
+      let armed = false; const arm = () => setTimeout(() => { armed = true; }, 150);
+      document.addEventListener('pointerup', arm, { once: true, capture: true });
+      const m = $('.lpmenu', p);
+      m.addEventListener('click', ev => { if (!armed) { ev.stopPropagation(); ev.preventDefault(); } }, true);
+      $('#lpcan', p).onclick = ev => { ev.stopPropagation(); closeMenu(); };
+      $('#lpdel', p).onclick = async ev => { ev.stopPropagation(); await deleteStill(e, s); openStills(e, Math.min(i, allStills(e).length - 1), true); };
+      m.onclick = ev => { ev.stopPropagation(); if (ev.target.classList.contains('lpmenu')) closeMenu(); };
+    };
+    tr.addEventListener('pointerdown', ev => {
+      const fig = ev.target.closest('.stf'); if (!fig || ev.target.closest('.lpmenu') || ev.button > 0) return;
+      cancelLP(); suppressClick = false; lp = { x: ev.clientX, y: ev.clientY, sl: tr.scrollLeft, t: setTimeout(() => { lp = null; suppressClick = true; openMenu(fig); }, 500) };
+    });
+    tr.addEventListener('pointermove', ev => { if (lp && (Math.abs(ev.clientX - lp.x) > 8 || Math.abs(ev.clientY - lp.y) > 8)) cancelLP(); });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => tr.addEventListener(t, cancelLP));
+    tr.addEventListener('scroll', () => { if (lp && Math.abs(tr.scrollLeft - lp.sl) > 4) cancelLP(); }, { passive: true });
+    tr.addEventListener('contextmenu', ev => ev.preventDefault());
+    tr.onclick = ev => {
+      if (suppressClick) { suppressClick = false; ev.stopPropagation(); return; }
+      if (ev.target.closest('.lpmenu')) return;
+      if (ev.target.closest('.stimg')) go(cur() + 1 >= st.length ? 0 : cur() + 1);   // tap a still = next
+    };
   });
-  $('.pane', sheet)?.classList.add('stillsheet');
+  const pane = $('.pane', sheet); pane?.classList.add('stillsheet'); if (quiet && pane) pane.style.animation = 'none';
 }
 
 /* Press-and-hold (or grip) drag to reorder, touch friendly. */
@@ -563,7 +657,8 @@ function finishTabAnim() {
   if (!tabAnim) return;
   const a = tabAnim; tabAnim = null;
   clearTimeout(a.t); clearTimeout(a.wait); a.mo?.disconnect(); a.ghost.remove();
-  view.style.transition = ''; view.style.transform = ''; view.style.opacity = ''; view.style.willChange = '';
+  (a.lifted || []).forEach(([el, home]) => { el.style.transition = ''; el.style.transform = ''; if (home) { if (home.isConnected) home.appendChild(el); else el.remove(); } else el.remove(); });
+  view.style.transition = ''; view.style.transform = ''; view.style.opacity = ''; view.style.willChange = ''; view.style.visibility = '';
 }
 function tabSpringBack() {
   view.style.transition = `transform .28s ${TAB_EASE}`; view.style.transform = '';
@@ -581,19 +676,39 @@ function tabSwipeTo(next, dir, fromX) {
   Object.assign(ghost.style, { position: 'fixed', top: r.top + 'px', left: (r.left - fromX) + 'px', width: r.width + 'px', margin: '0', padding: cs.padding, boxSizing: 'border-box', pointerEvents: 'none', zIndex: '1', transition: 'none', transform: `translate3d(${fromX}px,0,0)`, willChange: 'transform' });
   document.body.appendChild(ghost);
   view.style.transition = 'none'; view.style.transform = `translate3d(${dir * W + fromX}px,0,0)`;   // new page waits just off-screen, touching the old one
-  const a = tabAnim = { ghost };
+  view.style.visibility = 'hidden';   // until the new tab has rendered, the view still holds the OLD page: never show that copy
+  const a = tabAnim = { ghost, gfabs: [...ghost.querySelectorAll(':scope > .fab')] };
+  a.gfabs.forEach(el => { el.style.transition = 'none'; el.style.transform = `translate3d(${fromX}px,0,0)`; document.body.appendChild(el); });
+  a.lifted = a.gfabs.map(el => [el, null]);
   const go = () => {
     if (tabAnim !== a || a.started) return; a.started = true; a.mo?.disconnect(); clearTimeout(a.wait);
+    view.style.visibility = '';
     view.style.transition = 'none'; view.style.transform = `translate3d(${dir * W + fromX}px,0,0)`;
     void view.offsetWidth;
     const dur = Math.round(Math.max(180, Math.min(320, 340 * Math.abs(dir * W + fromX) / W)));
     const tr = `transform ${dur}ms ${TAB_EASE}`;
+    // position:fixed bits (the Library "+" button) would be laid out against the moving page's box while it has a transform,
+    // i.e. off the bottom of the screen, then pop in when the slide ends (the Home->Library flicker). Lift them out to
+    // <body> for the slide so they sit in their real spot and slide along with their page.
+    a.lifted = a.lifted || [];
+    const lift = (el, home, from, to) => { el.style.transition = 'none'; el.style.transform = `translate3d(${from}px,0,0)`; document.body.appendChild(el); a.lifted.push([el, home]); void el.offsetWidth; el.style.transition = tr; el.style.transform = `translate3d(${to}px,0,0)`; };
+    view.querySelectorAll(':scope > .fab').forEach(el => lift(el, view, dir * W + fromX, 0));
+    a.gfabs.forEach(el => { el.style.transition = tr; el.style.transform = `translate3d(${-dir * W}px,0,0)`; });
     view.style.transition = tr; ghost.style.transition = tr;
     view.style.transform = 'translate3d(0,0,0)'; ghost.style.transform = `translate3d(${-dir * W}px,0,0)`;
     a.t = setTimeout(finishTabAnim, dur + 40);
   };
   // Start once the new tab has rendered (some renders await IndexedDB), with a short fallback.
-  a.mo = new MutationObserver(() => requestAnimationFrame(go)); a.mo.observe(view, { childList: true });
+  // Then give its first screenful of pictures (Library thumbnails) up to ~120ms to decode so they don't pop in mid-slide.
+  const ready = () => {
+    if (tabAnim !== a || a.ready) return; a.ready = true; a.mo?.disconnect();
+    const imgs = [...view.querySelectorAll('img')].filter(i => i.offsetTop < innerHeight * 1.2 && !(i.complete && i.naturalWidth)).slice(0, 8);
+    if (!imgs.length) return go();
+    clearTimeout(a.wait); a.wait = setTimeout(go, 120);
+    Promise.all(imgs.map(i => i.decode().catch(() => {}))).then(go);
+  };
+  a.mo = new MutationObserver(ready);   // microtask: runs before the new page is ever painted
+  a.mo.observe(view, { childList: true });
   a.wait = setTimeout(go, 150);
   goTab(next);
 }
@@ -648,6 +763,7 @@ document.addEventListener('touchcancel', () => { if (sw?.edge) { if (sw.el) slid
 if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) document.documentElement.dataset.standalone = '1';
 load();
 route();
+loadUserStills().then(() => { if (userStills.size && curRoute().name === 'log' && !curRoute().arg) view.querySelectorAll('.ex').forEach(li => { const ex = exById(li.dataset.id); if (ex) refreshStack(ex); }); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW register failed', err));
