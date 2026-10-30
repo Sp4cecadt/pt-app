@@ -552,12 +552,58 @@ function blockedStart(t) {
   return false;
 }
 let sw = null;
+/* Tab-swipe animation (finger swipe between top-level tabs only; tab-bar taps and edge-back are unchanged).
+   While dragging, the page follows the finger 1:1 with no fade. On release the old page (a frozen snapshot) and the
+   new page slide together like a carousel, continuing from where the finger let go, with a decelerating ease. */
+const TAB_EASE = 'cubic-bezier(.22,.8,.24,1)';
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+let tabAnim = null;
+function tabDrag(x) { view.style.transition = 'none'; view.style.willChange = 'transform'; view.style.opacity = ''; view.style.transform = x ? `translate3d(${x}px,0,0)` : ''; }
+function finishTabAnim() {
+  if (!tabAnim) return;
+  const a = tabAnim; tabAnim = null;
+  clearTimeout(a.t); clearTimeout(a.wait); a.mo?.disconnect(); a.ghost.remove();
+  view.style.transition = ''; view.style.transform = ''; view.style.opacity = ''; view.style.willChange = '';
+}
+function tabSpringBack() {
+  view.style.transition = `transform .28s ${TAB_EASE}`; view.style.transform = '';
+  setTimeout(() => { if (!sw && !tabAnim) { view.style.transition = ''; view.style.willChange = ''; } }, 300);
+}
+function tabSwipeTo(next, dir, fromX) {
+  finishTabAnim();
+  if (reduceMotion.matches) { view.style.transition = ''; view.style.transform = ''; goTab(next); return; }
+  const W = innerWidth, r = view.getBoundingClientRect(), cs = getComputedStyle(view);
+  // Snapshot of the outgoing page, pinned exactly where it is on screen (ids stripped so lookups hit the real view).
+  const ghost = view.cloneNode(true);
+  ghost.removeAttribute('id'); ghost.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+  ghost.querySelectorAll('video').forEach(v => v.remove());
+  ghost.setAttribute('aria-hidden', 'true'); ghost.inert = true;
+  Object.assign(ghost.style, { position: 'fixed', top: r.top + 'px', left: (r.left - fromX) + 'px', width: r.width + 'px', margin: '0', padding: cs.padding, boxSizing: 'border-box', pointerEvents: 'none', zIndex: '1', transition: 'none', transform: `translate3d(${fromX}px,0,0)`, willChange: 'transform' });
+  document.body.appendChild(ghost);
+  view.style.transition = 'none'; view.style.transform = `translate3d(${dir * W + fromX}px,0,0)`;   // new page waits just off-screen, touching the old one
+  const a = tabAnim = { ghost };
+  const go = () => {
+    if (tabAnim !== a || a.started) return; a.started = true; a.mo?.disconnect(); clearTimeout(a.wait);
+    view.style.transition = 'none'; view.style.transform = `translate3d(${dir * W + fromX}px,0,0)`;
+    void view.offsetWidth;
+    const dur = Math.round(Math.max(180, Math.min(320, 340 * Math.abs(dir * W + fromX) / W)));
+    const tr = `transform ${dur}ms ${TAB_EASE}`;
+    view.style.transition = tr; ghost.style.transition = tr;
+    view.style.transform = 'translate3d(0,0,0)'; ghost.style.transform = `translate3d(${-dir * W}px,0,0)`;
+    a.t = setTimeout(finishTabAnim, dur + 40);
+  };
+  // Start once the new tab has rendered (some renders await IndexedDB), with a short fallback.
+  a.mo = new MutationObserver(() => requestAnimationFrame(go)); a.mo.observe(view, { childList: true });
+  a.wait = setTimeout(go, 150);
+  goTab(next);
+}
 function slideStyle(el, x, anim) { el.style.transition = anim ? 'transform .22s ease-out, opacity .22s ease-out' : 'none'; el.style.transform = x ? `translate3d(${x}px,0,0)` : ''; el.style.opacity = x ? String(Math.max(.4, 1 - Math.abs(x) / innerWidth * .8)) : ''; }
 function slideIn(fromX) {
   view.style.transition = 'none'; view.style.transform = `translate3d(${fromX}px,0,0)`; view.style.opacity = '.4';
   requestAnimationFrame(() => requestAnimationFrame(() => { slideStyle(view, 0, true); setTimeout(() => { view.style.transition = ''; }, 260); }));
 }
 document.addEventListener('touchstart', e => {
+  finishTabAnim();
   if (e.touches.length !== 1 || document.querySelector('.ex.dragging')) { sw = null; return; }
   const t = e.touches[0], edge = t.clientX <= EDGE;
   const modal = !sheet.hidden, sub = isSubScreen();
@@ -575,7 +621,8 @@ document.addEventListener('touchmove', e => {
   }
   if (e.cancelable) e.preventDefault();          // horizontal: stop the page wobbling sideways
   const x = sw.edge ? Math.max(0, sw.dx) : sw.dx * .35;
-  if (sw.el) slideStyle(sw.el, x, false);
+  if (sw.edge) { if (sw.el) slideStyle(sw.el, x, false); }
+  else tabDrag(sw.dx);   // tab swipe: follow the finger 1:1
 }, { passive: false });
 function endSwipe() {
   const s = sw; sw = null; if (!s || s.lock !== 'h') return;
@@ -588,15 +635,14 @@ function endSwipe() {
     } else slideStyle(s.el, 0, true);
     return;
   }
-  if (!clear) { slideStyle(s.el, 0, true); return; }
+  if (!clear) { tabSpringBack(); return; }
   const r = curRoute(), cur = r.name === 'done' ? 'log' : r.name;
   const i = TAB_ORDER.indexOf(cur), n = TAB_ORDER.length, dir = s.dx < 0 ? 1 : -1;   // left = next, right = previous
   const next = TAB_ORDER[((i < 0 ? 0 : i) + dir + n) % n];
-  view.style.transform = ''; view.style.opacity = '';
-  goTab(next); slideIn(dir > 0 ? innerWidth * .25 : -innerWidth * .25);
+  tabSwipeTo(next, dir, s.dx);
 }
 document.addEventListener('touchend', endSwipe);
-document.addEventListener('touchcancel', () => { if (sw?.el) slideStyle(sw.el, 0, true); sw = null; });
+document.addEventListener('touchcancel', () => { if (sw?.edge) { if (sw.el) slideStyle(sw.el, 0, true); } else if (sw) tabSpringBack(); sw = null; });
 
 /* ---------- boot ---------- */
 if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) document.documentElement.dataset.standalone = '1';
