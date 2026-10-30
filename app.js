@@ -2,7 +2,7 @@ import { LIBRARY, seedState } from './js/data.js';
 import { putVideo, getVideo, delVideo, allVideos, clearVideos } from './js/db.js';
 import { syncWorkout, uploadClip, notifyTrainer, uploadLibraryVideo } from './js/backend.js';
 
-export const APP_VERSION = 'v1';
+export const APP_VERSION = 'v2';
 const KEY = 'pt-app.state.v1';
 const $ = (s, r = document) => r.querySelector(s);
 const view = $('#view');
@@ -34,8 +34,37 @@ const I = {
   film: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 9.5l4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>',
   chart: '<svg viewBox="0 0 24 24"><path d="M4 19h16M6 15l4-4 3 3 5-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   summary: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 12.3l2.8 2.8L16.5 9.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  palette: '<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="7.5" cy="11.5" r="1.4" fill="currentColor"/><circle cx="10.5" cy="7.5" r="1.4" fill="currentColor"/><circle cx="15" cy="7.8" r="1.4" fill="currentColor"/></svg>',
   logi: '<svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 10h7M8.5 14h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
 };
+
+/* ---------- theme (accent colour) ---------- */
+export const THEMES = [
+  { id: 'green', name: 'Green', acc: '#6b8e6b', d: '#4f6f51', dd: '#2f4a33', tint: '#eef2ec', tint2: '#e3eadf', badge: '#cfdccb', track: '#d6e0d3' },
+  { id: 'blue', name: 'Blue', acc: '#4a7fb5', d: '#33689e', dd: '#1f4470', tint: '#ebf1f8', tint2: '#dde8f3', badge: '#c4d6ea', track: '#cfdcea' },
+  { id: 'red', name: 'Red', acc: '#c0504d', d: '#a33c3a', dd: '#6e2322', tint: '#f9eceb', tint2: '#f3dedd', badge: '#ebc3c2', track: '#eccfce' },
+  { id: 'orange', name: 'Orange', acc: '#d9822b', d: '#b96a1c', dd: '#7a4210', tint: '#fbf1e6', tint2: '#f6e4d0', badge: '#eecfaa', track: '#efd9bf' },
+  { id: 'purple', name: 'Purple', acc: '#7e5ca8', d: '#66478f', dd: '#412b60', tint: '#f2eef8', tint2: '#e8e0f2', badge: '#d5c6e8', track: '#dcd1ea' },
+  { id: 'pink', name: 'Pink', acc: '#d0679a', d: '#b44f80', dd: '#7a2f53', tint: '#fbedf3', tint2: '#f6e0ea', badge: '#efc4d8', track: '#efd0de' },
+  { id: 'charcoal', name: 'Charcoal', acc: '#4a4f55', d: '#373b40', dd: '#1f2226', tint: '#f0f1f2', tint2: '#e4e6e8', badge: '#cdd0d4', track: '#d6d8db' },
+];
+const THEME_KEY = 'pt-app.theme';
+function applyTheme(id) {
+  const t = THEMES.find(x => x.id === id) || THEMES[0], r = document.documentElement.style;
+  r.setProperty('--acc', t.acc); r.setProperty('--acc-d', t.d); r.setProperty('--acc-dd', t.dd); r.setProperty('--tint', t.tint);
+  r.setProperty('--tint2', t.tint2); r.setProperty('--badge', t.badge); r.setProperty('--track', t.track);
+  document.documentElement.dataset.theme = t.id;
+  return t;
+}
+const currentTheme = () => localStorage.getItem(THEME_KEY) || 'green';
+function setTheme(id) { localStorage.setItem(THEME_KEY, id); return applyTheme(id); }
+applyTheme(currentTheme());
+function openThemePicker() {
+  const draw = () => `<h3>App colour</h3><p class="sub">Pick an accent colour. It applies across the whole app and is saved on this phone.</p>
+    <div class="swatches">${THEMES.map(t => `<button class="sw${t.id === currentTheme() ? ' on' : ''}" data-id="${t.id}" style="--sc:${t.acc}" aria-label="${t.name}" aria-pressed="${t.id === currentTheme()}"><i style="background:${t.acc}">${I.check}</i><span>${t.name}</span></button>`).join('')}</div>
+    <div class="btns"><button class="btn" data-close>Done</button></div>`;
+  openSheet(draw(), p => { p.addEventListener('click', e => { const b = e.target.closest('.sw'); if (!b) return; const t = setTheme(b.dataset.id); p.innerHTML = '<div class="grab"></div>' + draw(); toast(t.name + ' theme'); }); });
+}
 
 /* ---------- state ---------- */
 let S;
@@ -116,13 +145,12 @@ async function renderHome() {
   const n = doneCount(), tot = W().exercises.length, uploads = (await allVideos().catch(() => [])).filter(v => v.kind === 'library').length;
   const label = W().finishedAt ? 'View summary' : W().startedAt ? 'Continue' : 'Start';
   view.innerHTML = `
-  <div class="row"><h1 class="h1 sp">Hi ${esc(S.user.name)}</h1><button class="avatar" id="me" aria-label="Your name">${I.user}</button></div>
+  <div class="row"><h1 class="h1 sp">Hi ${esc(S.user.name)}</h1><div class="hdrbtns"><button class="avatar pal" id="pal" aria-label="App colour" title="App colour">${I.palette}</button><button class="avatar" id="me" aria-label="Your name and settings">${I.user}</button></div></div>
   <section class="hero">
     <div class="kicker"><span class="badge">${I.dumbbell}</span>Today's workout</div>
     <h3>${esc(W().title)}</h3><p>${esc(W().focus)}</p>
     <div class="bar" aria-label="${n} of ${tot} done"><i style="width:${Math.round(n / tot * 100)}%"></i></div>
     <a class="btn" id="start" href="#/log">${label} ${I.chev}</a>
-    <a class="go" href="#/log" aria-label="Open today's workout">${I.arrow}</a>
   </section>
   <div class="stats">
     <a class="stat" href="#/progress"><div class="n"><span class="ic">${I.people}</span>${S.totalClients}</div><div class="l">Clients ›</div></a>
@@ -139,10 +167,11 @@ async function renderHome() {
     <a class="card" href="#/library" id="qup">${I.plus}Upload video</a>
   </div>
   <p class="foot">Data is saved on this phone only. PT Coach ${APP_VERSION} · <button id="reset">Reset demo data</button></p>`;
+  $('#pal').onclick = openThemePicker;
   $('#qup').onclick = () => { uploadFlow(); };
   $('#start').onclick = e => { if (W().finishedAt) { e.preventDefault(); location.hash = '#/done'; return; } startWorkout(); };
-  $('#me').onclick = () => openSheet(`<h3>Your name</h3><input type="text" id="nm" value="${esc(S.user.name)}" autocomplete="given-name"><div class="btns"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="ok">Save</button></div>`,
-    p => { $('#ok', p).onclick = () => { S.user.name = $('#nm', p).value.trim() || 'Coach'; save(); closeSheet(); renderHome(); }; });
+  $('#me').onclick = () => openSheet(`<h3>Your name</h3><input type="text" id="nm" value="${esc(S.user.name)}" autocomplete="given-name"><div class="btns"><button class="btn ghost" id="col">${I.palette.replace('<svg', '<svg width="20" height="20"')} App colour: ${esc((THEMES.find(t => t.id === currentTheme()) || THEMES[0]).name)}</button></div><div class="btns"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="ok">Save</button></div>`,
+    p => { $('#col', p).onclick = () => openThemePicker(); $('#ok', p).onclick = () => { S.user.name = $('#nm', p).value.trim() || 'Coach'; save(); closeSheet(); renderHome(); }; });
   $('#reset').onclick = async () => { if (!confirm('Reset all demo data and delete uploaded videos on this phone?')) return; await clearVideos().catch(() => {}); S = seedState(); save(); toast('Demo data reset'); renderHome(); };
 }
 
@@ -422,12 +451,12 @@ function chartSVG(data) {
   data.forEach((_, i) => g += `<text x="${x(i)}" y="${H - 12}" text-anchor="middle" font-size="10" fill="#555">Week ${i + 1}</text>`);
   const last = data.length - 1;
   return `<svg class="chart" viewBox="0 0 ${Wd} ${H}" role="img" aria-label="Strength over ${data.length} weeks: ${data.join(', ')} kg">
-    <defs><linearGradient id="gf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6b8e6b" stop-opacity=".28"/><stop offset="1" stop-color="#6b8e6b" stop-opacity="0"/></linearGradient></defs>
+    <defs><linearGradient id="gf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--acc)" stop-opacity=".28"/><stop offset="1" style="stop-color:var(--acc)" stop-opacity="0"/></linearGradient></defs>
     ${g}<text x="${L + 4}" y="${T + 2}" font-size="10" fill="#555" dominant-baseline="hanging">kg</text>
     <polygon points="${x(0)},${y(0)} ${pts} ${x(last)},${y(0)}" fill="url(#gf)"/>
-    <polyline points="${pts}" fill="none" stroke="#6b8e6b" stroke-width="2.2" stroke-linejoin="round"/>
-    ${data.map((v, i) => `<circle cx="${x(i)}" cy="${y(v)}" r="${i === last ? 4.5 : 3.2}" fill="#6b8e6b"/>`).join('')}
-    <circle cx="${x(last)}" cy="${y(data[last])}" r="8" fill="none" stroke="#6b8e6b" stroke-width="1.6" opacity=".6"/></svg>`;
+    <polyline points="${pts}" fill="none" style="stroke:var(--acc)" stroke-width="2.2" stroke-linejoin="round"/>
+    ${data.map((v, i) => `<circle cx="${x(i)}" cy="${y(v)}" r="${i === last ? 4.5 : 3.2}" style="fill:var(--acc)"/>`).join('')}
+    <circle cx="${x(last)}" cy="${y(data[last])}" r="8" fill="none" style="stroke:var(--acc)" stroke-width="1.6" opacity=".6"/></svg>`;
 }
 function renderProgress() {
   const c = S.clients.find(x => x.id === S.activeClient) || S.clients[0];
