@@ -266,7 +266,7 @@ function renderLog() {
 /* Press-and-hold (or grip) drag to reorder, touch friendly. */
 let dragJustEnded = false;
 function enableDrag(list, onDone) {
-  let el = null, startY = 0, pid = null, holdT = null, downY = 0, armed = null;
+  let el = null, startY = 0, pid = null, holdT = null, downY = 0, downX = 0, armed = null;
   const GAP = 10;
   const begin = (item, y) => {
     el = item; startY = y; el.classList.add('dragging'); navigator.vibrate?.(15);
@@ -299,7 +299,7 @@ function enableDrag(list, onDone) {
   };
   list.addEventListener('pointerdown', e => {
     const item = e.target.closest('.ex'); if (!item || e.button > 0) return;
-    pid = e.pointerId; downY = e.clientY;
+    pid = e.pointerId; downY = e.clientY; downX = e.clientX;
     if (e.target.closest('.grip')) { e.preventDefault(); item.setPointerCapture?.(pid); begin(item, e.clientY); return; }
     if (e.target.closest('.chk')) return;
     armed = item; holdT = setTimeout(() => { if (armed) { item.setPointerCapture?.(pid); begin(item, downY); } }, 380);
@@ -307,7 +307,7 @@ function enableDrag(list, onDone) {
   list.addEventListener('pointermove', e => {
     if (e.pointerId !== pid) return;
     if (el) { e.preventDefault(); move(e.clientY); }
-    else if (armed && Math.abs(e.clientY - downY) > 8) { clearTimeout(holdT); armed = null; }
+    else if (armed && (Math.abs(e.clientY - downY) > 8 || Math.abs(e.clientX - downX) > 8)) { clearTimeout(holdT); armed = null; }
   });
   list.addEventListener('pointerup', end); list.addEventListener('pointercancel', end);
   // iOS: stop the page scrolling while an item is being dragged.
@@ -488,6 +488,78 @@ function renderProgress() {
 /* ---------- keyboard: hide tab bar while typing so it never floats mid-screen ---------- */
 document.addEventListener('focusin', e => { if (e.target.matches('input,select,textarea')) document.body.classList.add('kb'); });
 document.addEventListener('focusout', () => setTimeout(() => { if (!document.activeElement?.matches('input,select,textarea')) document.body.classList.remove('kb'); }, 50));
+
+/* ---------- swipe gestures ----------
+   Mid-screen horizontal swipe on a top-level tab: left = next tab, right = previous (wraps around).
+   Edge swipe (starts within 24px of the left edge, moves right) = back: closes an open sheet, or leaves a
+   sub-screen (exercise detail -> Log, workout summary -> Log); on a top-level tab other than Home it goes Home.
+   While a sheet or sub-screen is open, only the edge-back swipe works. Vertical scrolling is never captured. */
+const TAB_ORDER = [...document.querySelectorAll('#tabs a')].map(a => a.dataset.tab);
+function curRoute() { const [name = 'home', arg] = (location.hash.replace(/^#\/?/, '').replace(/\?.*/, '') || 'home').split('/'); return { name: routes[name] ? name : 'home', arg }; }
+function isSubScreen() { const r = curRoute(); return r.name === 'done' || (r.name === 'log' && !!r.arg); }
+function goTab(tab) { location.hash = '#/' + tab; }   // same path as tapping the tab bar: route() syncs highlight + view
+function backTarget() {
+  if (!sheet.hidden) return 'sheet';
+  const r = curRoute();
+  if (isSubScreen()) { const b = view.querySelector('.topbar a.iconbtn[aria-label="Back"]'); return b?.getAttribute('href') || '#/log'; }
+  return r.name === 'home' ? null : '#/home';
+}
+function goBack() { const t = backTarget(); if (!t) return false; if (t === 'sheet') closeSheet(); else location.hash = t; return true; }
+const EDGE = 24, MIN_DX = 60, RATIO = 1.5, LOCK = 10;
+function blockedStart(t) {
+  if (!(t instanceof Element)) return false;
+  if (t.closest('input,select,textarea,[contenteditable],video,#tabs,.grip,.dragging,.swatches,[data-noswipe]')) return true;
+  for (let el = t; el && el !== document.body; el = el.parentElement) {
+    if (el.scrollWidth > el.clientWidth + 2) { const ox = getComputedStyle(el).overflowX; if (ox === 'auto' || ox === 'scroll') return true; }
+  }
+  return false;
+}
+let sw = null;
+function slideStyle(el, x, anim) { el.style.transition = anim ? 'transform .22s ease-out, opacity .22s ease-out' : 'none'; el.style.transform = x ? `translate3d(${x}px,0,0)` : ''; el.style.opacity = x ? String(Math.max(.4, 1 - Math.abs(x) / innerWidth * .8)) : ''; }
+function slideIn(fromX) {
+  view.style.transition = 'none'; view.style.transform = `translate3d(${fromX}px,0,0)`; view.style.opacity = '.4';
+  requestAnimationFrame(() => requestAnimationFrame(() => { slideStyle(view, 0, true); setTimeout(() => { view.style.transition = ''; }, 260); }));
+}
+document.addEventListener('touchstart', e => {
+  if (e.touches.length !== 1 || document.querySelector('.ex.dragging')) { sw = null; return; }
+  const t = e.touches[0], edge = t.clientX <= EDGE;
+  const modal = !sheet.hidden, sub = isSubScreen();
+  if (!edge && (modal || sub || blockedStart(e.target))) { sw = null; return; }
+  if (edge && !backTarget()) { sw = null; return; }
+  sw = { x: t.clientX, y: t.clientY, t: Date.now(), edge, lock: null, dx: 0, dy: 0, el: modal ? sheet.firstElementChild : view };
+}, { passive: true });
+document.addEventListener('touchmove', e => {
+  if (!sw) return;
+  const t = e.touches[0]; sw.dx = t.clientX - sw.x; sw.dy = t.clientY - sw.y;
+  if (!sw.lock) {
+    if (Math.abs(sw.dx) < LOCK && Math.abs(sw.dy) < LOCK) return;
+    sw.lock = Math.abs(sw.dx) > RATIO * Math.abs(sw.dy) && !(sw.edge && sw.dx < 0) ? 'h' : 'v';
+    if (sw.lock === 'v') { sw = null; return; }   // vertical: let the page scroll
+  }
+  if (e.cancelable) e.preventDefault();          // horizontal: stop the page wobbling sideways
+  const x = sw.edge ? Math.max(0, sw.dx) : sw.dx * .35;
+  if (sw.el) slideStyle(sw.el, x, false);
+}, { passive: false });
+function endSwipe() {
+  const s = sw; sw = null; if (!s || s.lock !== 'h') return;
+  const dt = Date.now() - s.t, adx = Math.abs(s.dx);
+  const clear = adx > MIN_DX && adx > RATIO * Math.abs(s.dy) && (dt < 700 || adx > innerWidth * .35);
+  if (s.edge) {
+    if (clear && s.dx > 0) {
+      slideStyle(s.el, innerWidth, true);
+      setTimeout(() => { s.el.style.transform = ''; s.el.style.opacity = ''; const wasSheet = !sheet.hidden; goBack(); if (!wasSheet) slideIn(-innerWidth * .3); }, 180);
+    } else slideStyle(s.el, 0, true);
+    return;
+  }
+  if (!clear) { slideStyle(s.el, 0, true); return; }
+  const r = curRoute(), cur = r.name === 'done' ? 'log' : r.name;
+  const i = TAB_ORDER.indexOf(cur), n = TAB_ORDER.length, dir = s.dx < 0 ? 1 : -1;   // left = next, right = previous
+  const next = TAB_ORDER[((i < 0 ? 0 : i) + dir + n) % n];
+  view.style.transform = ''; view.style.opacity = '';
+  goTab(next); slideIn(dir > 0 ? innerWidth * .25 : -innerWidth * .25);
+}
+document.addEventListener('touchend', endSwipe);
+document.addEventListener('touchcancel', () => { if (sw?.el) slideStyle(sw.el, 0, true); sw = null; });
 
 /* ---------- boot ---------- */
 if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) document.documentElement.dataset.standalone = '1';
