@@ -268,12 +268,15 @@ function renderLog() {
 }
 
 /* ---------- Form stills ----------
-   List control: a 2x2 grid of tiny squares to the right of the video thumbnail, exactly as tall as the thumbnail.
-   It shows at a glance whether stills are saved (photos) or not (empty outlined squares). Tap = stills viewer. */
+   List control: the stills as small overlapping photos in a square block right of the video thumbnail, exactly as
+   tall as it. One card per still (max 4) so the stack shows how many there are; stills[0] is the top/cover card and
+   the viewer opens on it. No stills = a stack of 4 empty dashed cards. Tap = stills viewer. */
 function stillsGrid(e) {
   const st = stillsFor(e), n = st.length;
-  const cells = [0, 1, 2, 3].map(i => st[i] ? `<span class="sq"><img src="${esc(st[i].src)}" alt="" loading="lazy" decoding="async"></span>` : '<span class="sq none"></span>').join('');
-  return `<button class="stills${n ? '' : ' none'}" aria-label="${n ? `Form stills for ${esc(e.name)}: ${n} key positions` : `No form stills for ${esc(e.name)}`}">${cells}</button>`;
+  // DOM order bottom -> top, so stills[0] is the last child (painted on top).
+  const cells = n ? st.slice(0, 4).map((s, i) => `<span class="sq" data-i="${i}"><img src="${esc(s.src)}" alt="" loading="lazy" decoding="async"></span>`).reverse().join('')
+    : '<span class="sq none"></span>'.repeat(4);
+  return `<button class="stills${n ? '' : ' none'}" data-count="${n}" aria-label="${n ? `Form stills for ${esc(e.name)}: ${n} key positions` : `No form stills for ${esc(e.name)}`}">${cells}</button>`;
 }
 function openStills(e) {
   if (!e) return;

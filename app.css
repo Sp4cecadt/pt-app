@@ -228,17 +228,23 @@ body.kb nav#tabs{display:none} body.kb .fab{display:none}
 .sw i svg{width:24px;height:24px;opacity:0}
 .sw.on i{box-shadow:0 0 0 3px #fff,0 0 0 5px var(--sc)} .sw.on i svg{opacity:1}
 .sw.on span{font-weight:700}
-/* Form stills: 2x2 grid beside the list thumbnail (same height), and the viewer sheet */
+/* Form stills: overlapping stills stack beside the list thumbnail (same height), and the viewer sheet */
 .ex{--th:52px;gap:8px}
 .ex .chk{width:42px;height:42px}
 .ex .nm{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.2}
 .ex .ds{font-size:13.5px}
 .ex .media{display:flex;gap:4px;flex:0 0 auto;align-items:center}
 .ex .media .thumb{width:80px;height:var(--th)}
-.stills{width:var(--th);height:var(--th);flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:4px;padding:0;border:0;background:none;cursor:pointer;border-radius:6px}
-.stills .sq{display:block;min-width:0;min-height:0;border-radius:5px;overflow:hidden;background:var(--tint2)}
+/* Overlapping stack of up to 4 still photos confined to the same var(--th) square (52px). Card 28px; rotations/offsets
+   chosen so every rotated card's bounding box stays inside the block (top card = last child = stills[0], fully visible). Positions keyed from the top card so a 1-3 card stack still looks right. */
+.stills{position:relative;display:block;width:var(--th);height:var(--th);flex:0 0 auto;padding:0;border:0;background:none;cursor:pointer;border-radius:6px}
+.stills .sq{position:absolute;display:block;width:28px;height:28px;border-radius:4px;overflow:hidden;background:var(--tint2);border:1.5px solid #fff;box-shadow:0 0 0 .5px rgba(20,40,25,.28),0 1px 2px rgba(20,40,25,.22)}
+.stills .sq:nth-last-child(4){left:4px;top:5px;transform:rotate(-14deg)}
+.stills .sq:nth-last-child(3){left:20px;top:6px;transform:rotate(10deg)}
+.stills .sq:nth-last-child(2){left:6px;top:19px;transform:rotate(-6deg)}
+.stills .sq:nth-last-child(1){left:17px;top:18px;transform:rotate(3deg)}
 .stills .sq img{width:100%;height:100%;object-fit:cover}
-.stills .sq.none{background:transparent;border:1.4px dashed #aab2ac}
+.stills .sq.none{background:#fff;border:1.4px dashed #9aa39c;box-shadow:0 1px 2px rgba(20,40,25,.12)}
 .stills:active{filter:brightness(.9)}
 .stills:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .sthead{display:flex;align-items:center;gap:8px;margin:-4px -6px 8px 0} .sthead h3{flex:1;margin:0}
