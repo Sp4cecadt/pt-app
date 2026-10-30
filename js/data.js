@@ -12,6 +12,34 @@ export const LIBRARY = [
   { id: 'lat-pulldown', name: 'Lat pulldown', group: 'Upper', muscles: 'Lats, biceps', dur: '0:33', img: 'img/lat-pulldown.jpg', mid: true, src: 'vid/lat-pulldown.mp4' },
 ];
 
+/* ---------- Form stills ----------
+   Each exercise may carry an optional `stills` array: [{ src, caption, placeholder? }].
+   - undefined  -> no coach choice yet; the app shows placeholder stills (this demo pass).
+   - []         -> coach chose no stills; the list shows empty outlined squares.
+   TODO(coach): let the coach choose whether to include stills per exercise, and source them either by
+   downloading images or by posing for the key positions themselves (camera capture), stored like clips in IndexedDB.
+   The placeholder photos below are generic public-domain gym shots (img/stills/CREDITS.md), NOT real form stills. */
+const PLACEHOLDER_IMGS = ['img/stills/still-1.jpg', 'img/stills/still-2.jpg', 'img/stills/still-3.jpg', 'img/stills/still-4.jpg'];
+const KEY_MOMENTS = [
+  [/romanian|rdl/i, ['Start: tall, bar at hips, soft knees', 'Hinge: hips back, bar close to thighs', 'Bottom: bar just below knees, flat back', 'Finish: squeeze glutes, hips through']],
+  [/deadlift/i, ['Setup: bar over mid-foot, shins close', 'Break the floor: chest up, lats tight', 'Past the knees: hips and shoulders rise together', 'Lockout: stand tall, hips through']],
+  [/squat/i, ['Start: braced, bar over mid-foot', 'Descent: hips back, knees track toes', 'Bottom: hip crease below knee', 'Drive: push the floor away, chest tall']],
+  [/bench/i, ['Start: arms locked over shoulders', 'Lowering: elbows ~45°, shoulder blades set', 'Bottom: bar touches mid-chest', 'Press: drive back up to lockout']],
+  [/overhead|shoulder press|ohp/i, ['Start: bar on front delts, elbows forward', 'Drive: head back, straight bar path', 'Lockout: bar over mid-foot, biceps by ears', 'Return: control bar back to shoulders']],
+  [/row/i, ['Start: hinged ~45°, flat back, arms long', 'Pull: lead with elbows', 'Top: bar to lower ribs, squeeze back', 'Lower: control to full stretch']],
+  [/pulldown|pull-up|chin/i, ['Start: arms long, chest up', 'Pull: elbows down and back', 'Bottom: bar to upper chest', 'Return: slow to full stretch']],
+  [/push-?up/i, ['Start: high plank, hands under shoulders', 'Lowering: elbows ~45°, body straight', 'Bottom: chest just above floor', 'Press: push back to plank']],
+  [/plank/i, ['Setup: elbows under shoulders', 'Hold: straight line head to heels', 'Brace: ribs down, glutes on', 'Finish: lower knees with control']],
+];
+const GENERIC = ['Start position', 'Mid-point', 'End range', 'Return'];
+export function placeholderStills(name = '') {
+  const caps = (KEY_MOMENTS.find(([re]) => re.test(name)) || [, GENERIC])[1];
+  return caps.map((caption, i) => ({ src: PLACEHOLDER_IMGS[i % PLACEHOLDER_IMGS.length], caption, placeholder: true }));
+}
+/** Stills to show for an exercise: its own `stills` if the coach set them, else placeholders. */
+export const stillsFor = ex => Array.isArray(ex?.stills) ? ex.stills : placeholderStills(ex?.name);
+
+// `stills` is optional per exercise (see Form stills above); omitted = placeholders for now.
 const ex = (id, name, sets, reps, weight, done, log = []) => ({ id, name, sets, reps, weight, rest: 90, done, log });
 
 export function seedState(now = Date.now()) {

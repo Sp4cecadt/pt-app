@@ -1,4 +1,4 @@
-import { LIBRARY, seedState } from './js/data.js';
+import { LIBRARY, seedState, stillsFor } from './js/data.js';
 import { putVideo, getVideo, delVideo, allVideos, clearVideos } from './js/db.js';
 import { syncWorkout, uploadClip, notifyTrainer, uploadLibraryVideo } from './js/backend.js';
 
@@ -243,7 +243,10 @@ function renderLog() {
     <li class="ex card" data-id="${e.id}">
       <button class="chk${e.done ? ' on' : ''}" aria-label="${e.done ? 'Mark not done' : 'Mark done'}">${I.check}</button>
       <a class="info" href="#/log/${e.id}"><div class="nm">${esc(e.name)}</div><div class="ds">${e.sets} × ${e.reps} • ${fmtW(e.weight)} kg${e.log.length && !e.done ? ` · ${e.log.length}/${e.sets} sets` : ''}</div></a>
-      <a class="thumb" href="#/log/${e.id}" aria-label="Form video"><img src="${lib(e.id).thumb || lib(e.id).img}" alt=""><span class="play c">${I.play}</span></a>
+      <div class="media">
+        <a class="thumb" href="#/log/${e.id}" aria-label="Form video"><img src="${lib(e.id).thumb || lib(e.id).img}" alt=""><span class="play c">${I.play}</span></a>
+        ${stillsGrid(e)}
+      </div>
       <button class="grip" aria-label="Drag to reorder">${I.grip}</button>
     </li>`).join('')}</ul>
   <p class="hint">Press and hold an exercise, or drag ☰, to reorder.</p>
@@ -257,10 +260,41 @@ function renderLog() {
   const list = $('#list');
   list.addEventListener('click', e => {
     if (dragJustEnded) { e.preventDefault(); e.stopPropagation(); return; }
+    const st = e.target.closest('.stills'); if (st) { e.preventDefault(); openStills(exById(st.closest('.ex').dataset.id)); return; }
     const c = e.target.closest('.chk'); if (!c) return;
     const ex = exById(c.closest('.ex').dataset.id); ex.done = !ex.done; if (ex.done) startWorkout(); save(); renderLog();
   }, true);
   enableDrag(list, ids => { w.exercises.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id)); save(); });
+}
+
+/* ---------- Form stills ----------
+   List control: a 2x2 grid of tiny squares to the right of the video thumbnail, exactly as tall as the thumbnail.
+   It shows at a glance whether stills are saved (photos) or not (empty outlined squares). Tap = stills viewer. */
+function stillsGrid(e) {
+  const st = stillsFor(e), n = st.length;
+  const cells = [0, 1, 2, 3].map(i => st[i] ? `<span class="sq"><img src="${esc(st[i].src)}" alt="" loading="lazy" decoding="async"></span>` : '<span class="sq none"></span>').join('');
+  return `<button class="stills${n ? '' : ' none'}" aria-label="${n ? `Form stills for ${esc(e.name)}: ${n} key positions` : `No form stills for ${esc(e.name)}`}">${cells}</button>`;
+}
+function openStills(e) {
+  if (!e) return;
+  const st = stillsFor(e);
+  const body = st.length ? `
+    <div class="stv" id="stv" data-noswipe>${st.map((s, i) => `<figure class="stf" data-i="${i}"><div class="stimg"><img src="${esc(s.src)}" alt="${esc(s.caption)}" draggable="false">${s.placeholder ? '<span class="phb">Placeholder</span>' : ''}<span class="stn">${i + 1}/${st.length}</span></div><figcaption>${esc(s.caption)}</figcaption></figure>`).join('')}</div>
+    <div class="stnav"><button class="iconbtn" id="stp" aria-label="Previous still">${I.back}</button><div class="dots">${st.map((_, i) => `<button class="dot${i ? '' : ' on'}" data-i="${i}" aria-label="Still ${i + 1}"></button>`).join('')}</div><button class="iconbtn flip" id="stn" aria-label="Next still">${I.back}</button></div>
+    ${st.some(s => s.placeholder) ? '<p class="sub sm">Placeholder stock photos. Your coach can add real stills of each key position later.</p>' : ''}`
+    : '<div class="empty">No form stills saved for this exercise yet.</div>';
+  openSheet(`<div class="sthead"><h3>${esc(e.name)} · Form stills</h3><button class="iconbtn x" data-close aria-label="Close">✕</button></div>${body}`, p => {
+    const tr = $('#stv', p); if (!tr) return;
+    const cur = () => Math.round(tr.scrollLeft / tr.clientWidth);
+    const go = i => tr.scrollTo({ left: Math.max(0, Math.min(st.length - 1, i)) * tr.clientWidth, behavior: 'smooth' });
+    const sync = () => p.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('on', i === cur()));
+    tr.addEventListener('scroll', () => requestAnimationFrame(sync), { passive: true });
+    $('#stp', p).onclick = () => go(cur() - 1);
+    $('#stn', p).onclick = () => go(cur() + 1);
+    $('.dots', p).onclick = ev => { const d = ev.target.closest('.dot'); if (d) go(+d.dataset.i); };
+    tr.onclick = ev => { if (ev.target.closest('.stimg')) go(cur() + 1 >= st.length ? 0 : cur() + 1); };   // tap a still = next
+  });
+  $('.pane', sheet)?.classList.add('stillsheet');
 }
 
 /* Press-and-hold (or grip) drag to reorder, touch friendly. */

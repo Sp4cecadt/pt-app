@@ -1,10 +1,10 @@
 // Offline support: app shell + demo media cached on install (versioned), stale-while-revalidate after.
 // Bump V on every deploy so phones pick up new code.
-const V = 'pt-app-v3';
+const V = 'pt-app-v4';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.json', 'js/data.js', 'js/db.js', 'js/backend.js',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png',
   ...['back-squat', 'bench-press', 'overhead-press', 'barbell-row', 'romanian-deadlift', 'lat-pulldown', 'squats', 'deadlift', 'push-ups', 'plank'].flatMap(n => [`img/${n}.jpg`, `vid/${n}.mp4`]),
-  'img/overhead-press-hero.jpg'];
+  'img/overhead-press-hero.jpg', ...[1, 2, 3, 4].map(n => `img/stills/still-${n}.jpg`)];
 self.addEventListener('install', e => e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k.startsWith('pt-app-') && k !== V).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 
