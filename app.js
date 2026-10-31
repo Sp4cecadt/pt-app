@@ -1,4 +1,4 @@
-import { LIBRARY, seedState, stillsFor } from './js/data.js';
+import { LIBRARY, seedState, stillsFor, EQUIPMENT } from './js/data.js';
 import { putVideo, getVideo, delVideo, allVideos, clearVideos } from './js/db.js';
 import { syncWorkout, uploadClip, notifyTrainer, uploadLibraryVideo } from './js/backend.js';
 
@@ -72,6 +72,8 @@ let S;
 function load() {
   try { S = JSON.parse(localStorage.getItem(KEY)); } catch { S = null; }
   if (!S || S.v !== 1) S = seedState();
+  // roles (v12): phones from before had an unused role 'trainer' -> start everyone in the client view; Coach mode is opt-in
+  if (!S.user.roleV) { S.user.role = 'client'; S.user.roleV = 1; }
   // New day: fresh copy of the day's plan (not started yet); keep clients and settings.
   const today = 'w-' + new Date().toISOString().slice(0, 10);
   if (S.workout.id !== today) { const fresh = seedState().workout; fresh.startedAt = null; fresh.exercises.forEach(e => { e.done = false; e.log = []; }); S.workout = fresh; S.clips = {}; }
@@ -188,8 +190,9 @@ async function renderHome() {
   $('#pal').onclick = openThemePicker;
   $('#qup').onclick = () => { uploadFlow(); };
   $('#start').onclick = e => { if (W().finishedAt) { e.preventDefault(); location.hash = '#/done'; return; } startWorkout(); };
-  $('#me').onclick = () => openSheet(`<h3>Your name</h3><input type="text" id="nm" value="${esc(S.user.name)}" autocomplete="given-name"><div class="btns"><button class="btn ghost" id="col">${I.palette.replace('<svg', '<svg width="20" height="20"')} App colour: ${esc((THEMES.find(t => t.id === currentTheme()) || THEMES[0]).name)}</button></div><div class="btns"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="ok">Save</button></div>`,
-    p => { $('#col', p).onclick = () => openThemePicker(); $('#ok', p).onclick = () => { S.user.name = $('#nm', p).value.trim() || 'Coach'; save(); closeSheet(); renderHome(); }; });
+  $('#me').onclick = () => openSheet(`<h3>Your name</h3><input type="text" id="nm" value="${esc(S.user.name)}" autocomplete="given-name"><div class="btns"><button class="btn ghost" id="col">${I.palette.replace('<svg', '<svg width="20" height="20"')} App colour: ${esc((THEMES.find(t => t.id === currentTheme()) || THEMES[0]).name)}</button></div><label class="coachsw"><span class="t"><b>Coach mode</b><small>For the PT: add and change equipment photos</small></span><input type="checkbox" id="coach" role="switch"${isCoach() ? ' checked' : ''}></label><div class="btns"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="ok">Save</button></div>`,
+    p => { $('#col', p).onclick = () => openThemePicker();
+      $('#coach', p).onchange = ev => { S.user.role = ev.target.checked ? 'trainer' : 'client'; save(); toast(ev.target.checked ? 'Coach mode on' : 'Coach mode off'); }; $('#ok', p).onclick = () => { S.user.name = $('#nm', p).value.trim() || 'Coach'; save(); closeSheet(); renderHome(); }; });
   $('#reset').onclick = async () => { if (!confirm('Reset all demo data and delete uploaded videos on this phone?')) return; await clearVideos().catch(() => {}); clearUserStills(); equipUrls.forEach(u => URL.revokeObjectURL(u)); equipUrls.clear(); S = seedState(); save(); toast('Demo data reset'); renderHome(); };
 }
 
@@ -209,7 +212,7 @@ async function renderLibrary() {
     const q = libQuery.trim().toLowerCase();
     let list = items.filter(v => (libFilter === 'All' || (libFilter === 'My uploads' ? v.upload : v.group === libFilter)) && (!q || `${v.name} ${v.group} ${v.muscles || ''}`.toLowerCase().includes(q)));
     if (S.libSort === 'az') list = [...list].sort((a, b) => a.name.localeCompare(b.name));
-    $('#grid').innerHTML = list.length ? list.map(v => `<button class="tile" data-id="${esc(v.id)}"><div class="th">${v.upload ? (v.poster ? `<img src="${v.poster}" alt="">` : `<div class="ph">${I.film}</div>`) : `<img src="${v.img}" alt="">`}<span class="play${v.mid ? ' mid' : ''}">${I.play}</span></div><div class="nm">${esc(v.name)}</div><div class="meta">${esc(v.group)}${v.muscles ? ' · ' + esc(v.muscles) : ''}${v.upload ? ' · uploaded' : ''}</div></button>`).join('')
+    $('#grid').innerHTML = list.length ? list.map(v => `<button class="tile" data-id="${esc(v.id)}"><div class="th">${v.upload ? (v.poster ? `<img src="${v.poster}" alt="">` : `<div class="ph">${I.film}</div>`) : `<img src="${v.img}" alt="">`}<span class="play">${I.play}</span></div><div class="nm">${esc(v.name)}</div><div class="meta">${esc(v.group)}${v.muscles ? ' · ' + esc(v.muscles) : ''}${v.upload ? ' · uploaded' : ''}</div></button>`).join('')
       : `<div class="empty" style="grid-column:1/-1">${libFilter === 'My uploads' && !q ? 'No uploads yet. Tap + to add a video from your phone.' : 'No videos match.'}</div>`;
   };
   draw();
@@ -275,7 +278,9 @@ function renderLog() {
   const list = $('#list');
   list.addEventListener('click', e => {
     if (dragJustEnded) { e.preventDefault(); e.stopPropagation(); return; }
-    const eq = e.target.closest('.equip'); if (eq) { e.preventDefault(); e.stopPropagation(); const ex = exById(eq.closest('.ex').dataset.id); if (equipUrls.has(ex.id)) openEquip(ex); else addEquip(ex); return; }
+    const eq = e.target.closest('button.equip'); if (eq) { e.preventDefault(); e.stopPropagation(); const ex = exById(eq.closest('.ex').dataset.id); if (equipSrc(ex)) openEquip(ex); else addEquip(ex); return; }
+    // the view-only equipment box (client) lets taps through to the row: the row itself opens the exercise, like its name
+    if (e.target.classList?.contains('ex')) { location.hash = '#/log/' + encodeURIComponent(e.target.dataset.id); return; }
     const c = e.target.closest('.chk'); if (!c) return;
     const ex = exById(c.closest('.ex').dataset.id); ex.done = !ex.done; if (ex.done) startWorkout(); save(); renderLog();
   }, true);
@@ -283,23 +288,31 @@ function renderLog() {
 }
 
 /* ---------- Equipment photo (one per exercise, shown on today's workout rows) ----------
-   So people can see what the equipment for an exercise looks like. Empty = dashed tile "Add equipment photo";
-   tap -> photo picker (iPhone offers Take Photo / Photo Library), downscaled to ~800px JPEG and kept on this phone
-   (IndexedDB record 'equip-<exId>', same store as the form photos). Filled tile tap -> viewer sheet with Replace photo,
-   press-and-hold to delete, swipe down to close. */
-const equipUrls = new Map();   // exId -> objectURL
+   So people can see what the equipment for an exercise looks like. 4:3 box (96x72) at the right of each row.
+   Who can change it: S.user.role — 'client' (default) sees the photo view-only: the box is a plain <div> with
+   pointer-events:none, so tapping it is the same as tapping the row (opens the exercise). 'trainer' = Coach mode
+   (switch in Home > your name & settings): the box is a button -> viewer with Add/Replace photo, press-and-hold to
+   delete, swipe down to close; with no photo at all it shows a dashed "Add equipment photo" tile.
+   Photos: the PT's own (IndexedDB record 'equip-<exId>', ~800px JPEG, on this phone) override the generic stand-in
+   from EQUIPMENT in js/data.js; deleting the PT photo falls back to the stand-in. */
+const isCoach = () => S.user?.role === 'trainer';
+const equipUrls = new Map();   // exId -> objectURL of the PT's own photo
 async function loadEquip() {
   const recs = (await allVideos().catch(() => [])).filter(r => r.kind === 'equip');
   equipUrls.forEach(u => URL.revokeObjectURL(u)); equipUrls.clear();
   recs.forEach(r => equipUrls.set(r.exId, URL.createObjectURL(r.blob)));
 }
+const equipSrc = e => equipUrls.get(e.id) || EQUIPMENT[e.id]?.src || '';
+const equipIsExample = e => !equipUrls.has(e.id) && !!EQUIPMENT[e.id];
 function equipTile(e) {
-  const u = equipUrls.get(e.id);
-  return u ? `<button class="equip has" data-ex="${esc(e.id)}" aria-label="Equipment photo for ${esc(e.name)}"><img src="${esc(u)}" alt="" draggable="false"></button>`
-    : `<button class="equip none" data-ex="${esc(e.id)}" aria-label="Add equipment photo for ${esc(e.name)}">${I.camera}<span>Add equipment photo</span></button>`;
+  const u = equipSrc(e), img = u ? `<img src="${esc(u)}" alt="" draggable="false">` : '';
+  if (!isCoach()) return `<div class="equip view ${u ? 'has' : 'none'}" data-ex="${esc(e.id)}" aria-hidden="true">${img || I.dumbbell}</div>`;
+  return u ? `<button class="equip has" data-ex="${esc(e.id)}" aria-label="Equipment photo for ${esc(e.name)}">${img}</button>`
+    : `<button class="equip none edit" data-ex="${esc(e.id)}" aria-label="Add equipment photo for ${esc(e.name)}">${I.camera}<span>Add equipment photo</span></button>`;
 }
 function refreshEquip(e) { view.querySelectorAll(`.equip[data-ex="${CSS.escape(e.id)}"]`).forEach(b => { b.outerHTML = equipTile(e); }); }
 async function addEquip(e) {
+  if (!isCoach()) return;
   const file = await pickPhoto(); if (!file) return;
   let blob; try { blob = await shrinkPhoto(file); } catch { blob = null; }
   if (!blob) { toast('Couldn’t read that photo'); return; }
@@ -310,19 +323,20 @@ async function addEquip(e) {
   toast(old ? 'Photo replaced' : 'Equipment photo added');
 }
 async function deleteEquip(e) {
+  if (!isCoach()) return;
   await delVideo('equip-' + e.id).catch(() => {});
   const u = equipUrls.get(e.id); equipUrls.delete(e.id); if (u) setTimeout(() => URL.revokeObjectURL(u), 1000);
-  refreshEquip(e); toast('Photo deleted');
+  refreshEquip(e); toast(EQUIPMENT[e.id] ? 'Photo deleted · example photo shown' : 'Photo deleted');
 }
 function openEquip(e, quiet = false) {
-  const u = equipUrls.get(e.id); if (!u) return;
-  openSheet(`<div class="sthead"><h3>${esc(e.name)} · Equipment</h3><button class="iconbtn x" data-close aria-label="Close">✕</button></div>
+  const u = equipSrc(e); if (!u || !isCoach()) return;
+  const ex = equipIsExample(e);
+  openSheet(`<div class="sthead"><h3>${esc(e.name)} · Equipment${ex ? '<span class="eqnote">Example</span>' : ''}</h3><button class="iconbtn x" data-close aria-label="Close">✕</button></div>
     <div class="eqv" id="eqv"><div class="stimg eqimg"><img src="${esc(u)}" alt="Equipment for ${esc(e.name)}" draggable="false"></div></div>
-    <button class="btn ghost block stadd" id="eqrep">${I.camera.replace('<svg', '<svg width="20" height="20"')} Replace photo</button>
-    <p class="sub sm">Press and hold the photo to delete it.</p>`, p => {
+    <button class="btn ghost block stadd" id="eqrep">${I.camera.replace('<svg', '<svg width="20" height="20"')} ${ex ? 'Add your photo' : 'Replace photo'}</button>
+    <p class="sub sm">${ex ? 'Example photo, shown until you add one of your gym’s equipment.' : `Press and hold the photo to delete it${EQUIPMENT[e.id] ? ' (the example photo comes back)' : ''}.`}</p>`, p => {
     $('#eqrep', p).onclick = () => addEquip(e);
-    const box = $('.eqimg', p);
-    const menu = longPressMenu(box, p, 'Equipment photo', async () => { await deleteEquip(e); closeSheet(); });
+    const menu = ex ? { cancel() {} } : longPressMenu($('.eqimg', p), p, 'Equipment photo', async () => { await deleteEquip(e); closeSheet(); });
     swipeDownToDismiss(p, { blocked: () => !!p.querySelector('.lpmenu'), onDrag: menu.cancel });
   });
   const pane = $('.pane', sheet); pane?.classList.add('stillsheet'); if (quiet && pane) pane.style.animation = 'none';
@@ -804,7 +818,7 @@ const TAB_EASE = 'cubic-bezier(.22,.8,.24,1)';
 /** Tab-to-tab "fade through white" timings (ms) — tweak here. out: old screen fades to the plain background;
     hold: blank background on its own; in: new screen fades in. drift: small sideways shift (fraction of screen width,
     in the swipe direction; 0 with reduced motion). Total = out + hold + in. A new swipe/tap mid-way jumps to the target. */
-const TAB_FADE = { out: 150, hold: 300, in: 200, drift: .06 };
+const TAB_FADE = { out: 110, hold: 200, in: 150, drift: .06 };
 const EASE_IO = 'cubic-bezier(.42,0,.58,1)', EASE_PUSH = 'cubic-bezier(.2,.85,.25,1)';
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 let tabAnim = null, navNext = null, lastRoute = null;

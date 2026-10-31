@@ -40,12 +40,24 @@ export function placeholderStills(name = '') {
 export const stillsFor = ex => Array.isArray(ex?.stills) ? ex.stills : placeholderStills(ex?.name);
 
 // `stills` is optional per exercise (see Form stills above); omitted = placeholders for now.
+/* Equipment photos shown in the box on Today's workout rows.
+   TODO: these are generic stand-ins (see img/equipment/CREDITS.md) until the PT adds real photos of the gym's own
+   equipment in Coach mode. A PT photo overrides the stand-in; deleting it falls back to the stand-in. */
+export const EQUIPMENT = {
+  'back-squat': { src: 'img/equipment/back-squat.jpg', placeholder: true },
+  'bench-press': { src: 'img/equipment/bench-press.jpg', placeholder: true },
+  'overhead-press': { src: 'img/equipment/overhead-press.jpg', placeholder: true },
+  'barbell-row': { src: 'img/equipment/barbell-row.jpg', placeholder: true },
+  'romanian-deadlift': { src: 'img/equipment/romanian-deadlift.jpg', placeholder: true },
+  'lat-pulldown': { src: 'img/equipment/lat-pulldown.jpg', placeholder: true },
+};
+
 const ex = (id, name, sets, reps, weight, done, log = []) => ({ id, name, sets, reps, weight, rest: 90, done, log });
 
 export function seedState(now = Date.now()) {
   return {
     v: 1,
-    user: { name: 'Alex', role: 'trainer' },
+    user: { name: 'Alex', role: 'client', roleV: 1 },   // role: 'client' (view-only equipment photos) | 'trainer' (Coach mode)
     workout: {
       id: 'w-' + new Date(now).toISOString().slice(0, 10),
       title: 'Full body',
