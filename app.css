@@ -285,8 +285,10 @@ body.kb nav#tabs{display:none} body.kb .fab{display:none}
 .pane.stillsheet{overscroll-behavior:contain}
 .pane.stillsheet .stv{touch-action:pan-x}
 .sheet{overscroll-behavior:contain}
-/* Exercise detail: the Form photos stack sits over the video's bottom-right corner (same 52px fan as the list). */
+/* Exercise detail: the Form photos stack sits over the video's bottom-right corner (same 52px fan as the list). The fan's
+   visible cards sit 0.96px in from the button's right edge and 2.9px up from its bottom, so bottom:8.06px makes the visible
+   gap below the cards equal the gap to their right (both 10.96px). */
 .vidwrap{position:relative}
-.dstills{--th:52px;position:absolute;right:10px;bottom:10px;z-index:2;filter:drop-shadow(0 2px 6px rgba(0,0,0,.45));transition:bottom .2s ease}
+.dstills{--th:52px;position:absolute;right:10px;bottom:8.06px;z-index:2;filter:drop-shadow(0 2px 6px rgba(0,0,0,.45));transition:bottom .2s ease}
 .vidwrap.playing .dstills{bottom:58px}   /* clear the native play/scrubber/fullscreen bar */
 .dstills .stills::before{content:"";position:absolute;inset:-8px}   /* comfortable ~68px hit area */
