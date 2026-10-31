@@ -780,7 +780,7 @@ document.addEventListener('focusin', e => { if (e.target.matches('input,select,t
 document.addEventListener('focusout', () => setTimeout(() => { if (!document.activeElement?.matches('input,select,textarea')) document.body.classList.remove('kb'); }, 50));
 
 /* ---------- swipe gestures ----------
-   Mid-screen horizontal swipe on a top-level tab: left = next tab, right = previous (wraps around).
+   Mid-screen horizontal swipe on a top-level tab: left = next tab, right = previous; no wraparound — at the first/last tab it rubber-bands and snaps back.
    Edge swipe (starts within 24px of the left edge, moves right) = back: closes an open sheet, or leaves a
    sub-screen (exercise detail -> Log, workout summary -> Log); on a top-level tab other than Home it goes Home.
    While a sheet or sub-screen is open, only the edge-back swipe works. Vertical scrolling is never captured. */
@@ -961,8 +961,15 @@ document.addEventListener('touchmove', e => {
   if (e.cancelable) e.preventDefault();          // horizontal: stop the page wobbling sideways
   const x = sw.edge ? Math.max(0, sw.dx) : sw.dx * .35;
   if (sw.edge) { if (sw.el) slideStyle(sw.el, x, false); }
-  else tabDrag(sw.dx);   // tab swipe: follow the finger 1:1
+  else tabDrag(tabNext(sw.dx) ? sw.dx : rubber(sw.dx));   // tab swipe: follow the finger 1:1; at either end, resist (iOS rubber band)
 }, { passive: false });
+/** Tab next to the current one in the swipe direction (left = next, right = previous), or null at either end: no wraparound. */
+function tabNext(dx) {
+  const r = curRoute(), cur = r.name === 'done' ? 'log' : r.name;
+  const i = Math.max(0, TAB_ORDER.indexOf(cur)), j = i + (dx < 0 ? 1 : -1);
+  return j >= 0 && j < TAB_ORDER.length ? TAB_ORDER[j] : null;
+}
+const rubber = dx => Math.sign(dx) * 70 * (1 - 1 / (Math.abs(dx) / 220 + 1));   // shrinking give, never more than 70px
 function endSwipe() {
   const s = sw; sw = null; if (!s || s.lock !== 'h') return;
   const dt = Date.now() - s.t, adx = Math.abs(s.dx);
@@ -974,11 +981,9 @@ function endSwipe() {
     } else slideStyle(s.el, 0, true);
     return;
   }
-  if (!clear) { tabSpringBack(); return; }
-  const r = curRoute(), cur = r.name === 'done' ? 'log' : r.name;
-  const i = TAB_ORDER.indexOf(cur), n = TAB_ORDER.length, dir = s.dx < 0 ? 1 : -1;   // left = next, right = previous
-  const next = TAB_ORDER[((i < 0 ? 0 : i) + dir + n) % n];
-  tabSwipeTo(next, dir, s.dx);
+  const next = tabNext(s.dx);
+  if (!clear || !next) { tabSpringBack(); return; }   // first / last page: snap back, no wraparound
+  tabSwipeTo(next, s.dx < 0 ? 1 : -1, s.dx);
 }
 document.addEventListener('touchend', endSwipe);
 document.addEventListener('touchcancel', () => { if (sw?.edge) { if (sw.el) slideStyle(sw.el, 0, true); } else if (sw) tabSpringBack(); sw = null; });

@@ -1,6 +1,6 @@
 // Offline support: app shell + demo media cached on install (versioned), stale-while-revalidate after.
 // Bump V on every deploy so phones pick up new code.
-const V = 'pt-app-v12';
+const V = 'pt-app-v13';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.json', 'js/data.js', 'js/db.js', 'js/backend.js',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png',
   ...['back-squat', 'bench-press', 'overhead-press', 'barbell-row', 'romanian-deadlift', 'lat-pulldown', 'squats', 'deadlift', 'push-ups', 'plank'].flatMap(n => [`img/${n}.jpg`, `vid/${n}.mp4`]),
