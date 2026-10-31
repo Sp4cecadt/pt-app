@@ -10,6 +10,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 
 /* ---------- icons ---------- */
 const I = {
+  camera: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
   back: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   arrow: '<svg viewBox="0 0 24 24" width="26" height="26"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   chev: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -189,7 +190,7 @@ async function renderHome() {
   $('#start').onclick = e => { if (W().finishedAt) { e.preventDefault(); location.hash = '#/done'; return; } startWorkout(); };
   $('#me').onclick = () => openSheet(`<h3>Your name</h3><input type="text" id="nm" value="${esc(S.user.name)}" autocomplete="given-name"><div class="btns"><button class="btn ghost" id="col">${I.palette.replace('<svg', '<svg width="20" height="20"')} App colour: ${esc((THEMES.find(t => t.id === currentTheme()) || THEMES[0]).name)}</button></div><div class="btns"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="ok">Save</button></div>`,
     p => { $('#col', p).onclick = () => openThemePicker(); $('#ok', p).onclick = () => { S.user.name = $('#nm', p).value.trim() || 'Coach'; save(); closeSheet(); renderHome(); }; });
-  $('#reset').onclick = async () => { if (!confirm('Reset all demo data and delete uploaded videos on this phone?')) return; await clearVideos().catch(() => {}); clearUserStills(); S = seedState(); save(); toast('Demo data reset'); renderHome(); };
+  $('#reset').onclick = async () => { if (!confirm('Reset all demo data and delete uploaded videos on this phone?')) return; await clearVideos().catch(() => {}); clearUserStills(); equipUrls.forEach(u => URL.revokeObjectURL(u)); equipUrls.clear(); S = seedState(); save(); toast('Demo data reset'); renderHome(); };
 }
 
 /* ---------- Library ---------- */
@@ -260,10 +261,7 @@ function renderLog() {
     <li class="ex card" data-id="${e.id}">
       <button class="chk${e.done ? ' on' : ''}" aria-label="${e.done ? 'Mark not done' : 'Mark done'}">${I.check}</button>
       <a class="info" href="#/log/${e.id}"><div class="nm">${esc(e.name)}</div><div class="ds">${e.sets} × ${e.reps} • ${fmtW(e.weight)} kg${e.log.length && !e.done ? ` · ${e.log.length}/${e.sets} sets` : ''}</div></a>
-      <div class="media">
-        <a class="thumb" href="#/log/${e.id}" aria-label="Form video"><img src="${lib(e.id).thumb || lib(e.id).img}" alt=""><span class="play c">${I.play}</span></a>
-        ${stillsGrid(e)}
-      </div>
+      ${equipTile(e)}
       <button class="grip" aria-label="Drag to reorder">${I.grip}</button>
     </li>`).join('')}</ul>
   <p class="hint">Press and hold an exercise, or drag ☰, to reorder.</p>
@@ -277,11 +275,78 @@ function renderLog() {
   const list = $('#list');
   list.addEventListener('click', e => {
     if (dragJustEnded) { e.preventDefault(); e.stopPropagation(); return; }
-    const st = e.target.closest('.stills'); if (st) { e.preventDefault(); openStills(exById(st.closest('.ex').dataset.id)); return; }
+    const eq = e.target.closest('.equip'); if (eq) { e.preventDefault(); e.stopPropagation(); const ex = exById(eq.closest('.ex').dataset.id); if (equipUrls.has(ex.id)) openEquip(ex); else addEquip(ex); return; }
     const c = e.target.closest('.chk'); if (!c) return;
     const ex = exById(c.closest('.ex').dataset.id); ex.done = !ex.done; if (ex.done) startWorkout(); save(); renderLog();
   }, true);
   enableDrag(list, ids => { w.exercises.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id)); save(); });
+}
+
+/* ---------- Equipment photo (one per exercise, shown on today's workout rows) ----------
+   So people can see what the equipment for an exercise looks like. Empty = dashed tile "Add equipment photo";
+   tap -> photo picker (iPhone offers Take Photo / Photo Library), downscaled to ~800px JPEG and kept on this phone
+   (IndexedDB record 'equip-<exId>', same store as the form photos). Filled tile tap -> viewer sheet with Replace photo,
+   press-and-hold to delete, swipe down to close. */
+const equipUrls = new Map();   // exId -> objectURL
+async function loadEquip() {
+  const recs = (await allVideos().catch(() => [])).filter(r => r.kind === 'equip');
+  equipUrls.forEach(u => URL.revokeObjectURL(u)); equipUrls.clear();
+  recs.forEach(r => equipUrls.set(r.exId, URL.createObjectURL(r.blob)));
+}
+function equipTile(e) {
+  const u = equipUrls.get(e.id);
+  return u ? `<button class="equip has" data-ex="${esc(e.id)}" aria-label="Equipment photo for ${esc(e.name)}"><img src="${esc(u)}" alt="" draggable="false"></button>`
+    : `<button class="equip none" data-ex="${esc(e.id)}" aria-label="Add equipment photo for ${esc(e.name)}">${I.camera}<span>Add equipment photo</span></button>`;
+}
+function refreshEquip(e) { view.querySelectorAll(`.equip[data-ex="${CSS.escape(e.id)}"]`).forEach(b => { b.outerHTML = equipTile(e); }); }
+async function addEquip(e) {
+  const file = await pickPhoto(); if (!file) return;
+  let blob; try { blob = await shrinkPhoto(file); } catch { blob = null; }
+  if (!blob) { toast('Couldn’t read that photo'); return; }
+  await putVideo({ id: 'equip-' + e.id, kind: 'equip', exId: e.id, blob, createdAt: Date.now() });
+  const old = equipUrls.get(e.id); equipUrls.set(e.id, URL.createObjectURL(blob)); if (old) setTimeout(() => URL.revokeObjectURL(old), 1000);
+  refreshEquip(e);
+  if (!sheet.hidden && $('#eqv', sheet)) openEquip(e, true);
+  toast(old ? 'Photo replaced' : 'Equipment photo added');
+}
+async function deleteEquip(e) {
+  await delVideo('equip-' + e.id).catch(() => {});
+  const u = equipUrls.get(e.id); equipUrls.delete(e.id); if (u) setTimeout(() => URL.revokeObjectURL(u), 1000);
+  refreshEquip(e); toast('Photo deleted');
+}
+function openEquip(e, quiet = false) {
+  const u = equipUrls.get(e.id); if (!u) return;
+  openSheet(`<div class="sthead"><h3>${esc(e.name)} · Equipment</h3><button class="iconbtn x" data-close aria-label="Close">✕</button></div>
+    <div class="eqv" id="eqv"><div class="stimg eqimg"><img src="${esc(u)}" alt="Equipment for ${esc(e.name)}" draggable="false"></div></div>
+    <button class="btn ghost block stadd" id="eqrep">${I.camera.replace('<svg', '<svg width="20" height="20"')} Replace photo</button>
+    <p class="sub sm">Press and hold the photo to delete it.</p>`, p => {
+    $('#eqrep', p).onclick = () => addEquip(e);
+    const box = $('.eqimg', p);
+    const menu = longPressMenu(box, p, 'Equipment photo', async () => { await deleteEquip(e); closeSheet(); });
+    swipeDownToDismiss(p, { blocked: () => !!p.querySelector('.lpmenu'), onDrag: menu.cancel });
+  });
+  const pane = $('.pane', sheet); pane?.classList.add('stillsheet'); if (quiet && pane) pane.style.animation = 'none';
+}
+/** Press-and-hold (500ms) on `target` -> small menu "Delete photo / Cancel" drawn over it. Returns { cancel }. */
+function longPressMenu(target, p, title, onDelete) {
+  let lp = null;
+  const cancel = () => { if (lp) { clearTimeout(lp.t); lp = null; } };
+  const close = () => p.querySelector('.lpmenu')?.remove();
+  const open = () => {
+    close(); navigator.vibrate?.(12);
+    target.insertAdjacentHTML('beforeend', `<div class="lpmenu" role="dialog" aria-label="Photo options"><div class="lpbox"><div class="lpt">${esc(title)}</div><button class="lpdel" id="lpdel">Delete photo</button><button class="lpcan" id="lpcan">Cancel</button></div></div>`);
+    let armed = false; document.addEventListener('pointerup', () => setTimeout(() => { armed = true; }, 150), { once: true, capture: true });
+    const m = $('.lpmenu', p);
+    m.addEventListener('click', ev => { if (!armed) { ev.stopPropagation(); ev.preventDefault(); } }, true);
+    $('#lpcan', p).onclick = ev => { ev.stopPropagation(); close(); };
+    $('#lpdel', p).onclick = ev => { ev.stopPropagation(); onDelete(); };
+    m.onclick = ev => { ev.stopPropagation(); if (ev.target === m) close(); };
+  };
+  target.addEventListener('pointerdown', ev => { if (ev.target.closest('.lpmenu') || ev.button > 0) return; cancel(); lp = { x: ev.clientX, y: ev.clientY, t: setTimeout(() => { lp = null; open(); }, 500) }; });
+  target.addEventListener('pointermove', ev => { if (lp && (Math.abs(ev.clientX - lp.x) > 8 || Math.abs(ev.clientY - lp.y) > 8)) cancel(); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => target.addEventListener(t, cancel));
+  target.addEventListener('contextmenu', ev => ev.preventDefault());
+  return { cancel };
 }
 
 /* ---------- Form stills ----------
@@ -727,16 +792,19 @@ function blockedStart(t) {
 }
 let sw = null;
 /* Screen transitions (iOS-like). Every route change goes through navTransition():
-   - tab change (tab bar tap or finger swipe): quick crossfade, 240ms ease-in-out, with a small parallax shift (10% of the
-     width) — the new screen drifts in from the swipe side and fades in ON TOP of the old one, which fades out underneath,
-     so there is never a blank/see-through frame. While the finger drags, the page follows 1:1 and fades a little, so
-     letting go flows straight into the crossfade.
+   - tab change (tab bar tap or finger swipe): fade through the plain background ("white"): the old screen fades out,
+     the blank page holds briefly, then the new screen fades in with a small drift from the swipe side (TAB_FADE).
+     While the finger drags, the page follows 1:1 and fades a little, so letting go flows straight into the fade-out.
    - push (today's workout -> exercise, -> summary): new screen slides in from the right over the old one, which shifts
      30% left and dims slightly. pop (Back button / edge swipe) is the exact reverse, continuing from the finger.
-   - reduced motion: plain 200ms crossfade, no movement.
+   - reduced motion: tabs fade through the background with no movement; push/pop become a plain 200ms crossfade.
    The old screen is a frozen snapshot (ghost); the new one stays hidden until rendered and its first screenful of
    thumbnails has decoded (max ~120ms), so nothing pops in mid-transition. Only transform + opacity animate. */
 const TAB_EASE = 'cubic-bezier(.22,.8,.24,1)';
+/** Tab-to-tab "fade through white" timings (ms) — tweak here. out: old screen fades to the plain background;
+    hold: blank background on its own; in: new screen fades in. drift: small sideways shift (fraction of screen width,
+    in the swipe direction; 0 with reduced motion). Total = out + hold + in. A new swipe/tap mid-way jumps to the target. */
+const TAB_FADE = { out: 150, hold: 300, in: 200, drift: .06 };
 const EASE_IO = 'cubic-bezier(.42,0,.58,1)', EASE_PUSH = 'cubic-bezier(.2,.85,.25,1)';
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 let tabAnim = null, navNext = null, lastRoute = null;
@@ -745,7 +813,7 @@ function tabDrag(x) { view.style.transition = 'none'; view.style.willChange = 't
 function finishTabAnim() {
   if (!tabAnim) return;
   const a = tabAnim; tabAnim = null;
-  clearTimeout(a.t); clearTimeout(a.wait); a.mo?.disconnect(); a.ghost.remove(); a.dim?.remove();
+  clearTimeout(a.t); clearTimeout(a.t2); clearTimeout(a.wait); a.mo?.disconnect(); a.ghost.remove(); a.dim?.remove();
   (a.lifted || []).forEach(([el, home]) => { el.style.transition = el.style.transform = el.style.opacity = ''; if (home?.isConnected) home.appendChild(el); else el.remove(); });
   Object.assign(view.style, { transition: '', transform: '', opacity: '', willChange: '', visibility: '', position: '', zIndex: '', boxShadow: '', background: '' });
 }
@@ -777,15 +845,33 @@ function navTransition(t) {
   view.style.transition = 'none'; view.style.visibility = 'hidden';   // until the new screen has rendered, never show the old copy in #view
   view.style.position = 'relative'; view.style.zIndex = kind === 'pop' ? '1' : '2';
   const a = tabAnim = { ghost, lifted: [] };
-  if (kind === 'tab' && fromX) {   // keep the released screen moving while the new one renders: no stall after letting go
-    void ghost.offsetWidth; ghost.style.transition = `transform 300ms ${TAB_EASE}`; ghost.style.transform = `translate3d(${fromX - dir * W * .1}px,0,0)`;
+  const isTab = t.kind === 'tab', drift = reduceMotion.matches ? 0 : W * TAB_FADE.drift;
+  if (isTab) {   // fade-through-white: the old screen starts fading out right away (no stall after letting go)
+    a.t0 = performance.now(); void ghost.offsetWidth;
+    ghost.style.transition = `transform ${TAB_FADE.out}ms ease-in, opacity ${TAB_FADE.out}ms ease-in`;
+    ghost.style.transform = `translate3d(${fromX - dir * drift}px,0,0)`; ghost.style.opacity = '0';
   }
   // position:fixed bits (Library "+" button) would be laid out against a transformed page's box (off-screen) and pop
   // in at the end; lift them out to <body> for the transition so they stay in their real spot and move with their page.
   const gfabs = [...ghost.querySelectorAll(':scope > .fab')];
-  gfabs.forEach(el => { el.style.transition = 'none'; el.style.transform = `translate3d(${fromX}px,0,0)`; el.style.opacity = String(fromO); el.style.zIndex = '9'; document.body.appendChild(el); a.lifted.push([el, null]); });
+  gfabs.forEach(el => { el.style.transition = 'none'; el.style.transform = `translate3d(${fromX}px,0,0)`; el.style.opacity = String(fromO); el.style.zIndex = '9'; document.body.appendChild(el); a.lifted.push([el, null]);
+    if (isTab) { void el.offsetWidth; el.style.transition = ghost.style.transition; el.style.transform = ghost.style.transform; el.style.opacity = '0'; } });
   const go = () => {
     if (tabAnim !== a || a.started) return; a.started = true; a.mo?.disconnect(); clearTimeout(a.wait);
+    if (isTab) {   // new screen waits invisible (rendered) through the blank hold, then fades in with a small drift
+      const wait = Math.max(0, TAB_FADE.out + TAB_FADE.hold - (performance.now() - a.t0));
+      view.style.visibility = ''; view.style.willChange = 'transform,opacity'; view.style.transition = 'none';
+      view.style.transform = `translate3d(${dir * drift}px,0,0)`; view.style.opacity = '0';
+      const vfabs = [...view.querySelectorAll(':scope > .fab')];
+      vfabs.forEach(el => { el.style.transition = 'none'; el.style.transform = view.style.transform; el.style.opacity = '0'; document.body.appendChild(el); a.lifted.push([el, view]); });
+      a.t2 = setTimeout(() => {
+        if (tabAnim !== a) return;
+        const tr = `transform ${TAB_FADE.in}ms ease-out, opacity ${TAB_FADE.in}ms ease-out`;
+        [view, ...vfabs].forEach(el => { el.style.transition = tr; el.style.transform = 'translate3d(0,0,0)'; el.style.opacity = '1'; });
+        a.t = setTimeout(finishTabAnim, TAB_FADE.in + 40);
+      }, wait);
+      return;
+    }
     let dur, vFrom, vTo, gTo, vOpFrom = 1, gOpTo = 1, trV, trG, dimFrom = null, dimTo = 0;
     if (kind === 'tab') {
       const P = W * .1; dur = 240;
@@ -887,6 +973,7 @@ document.addEventListener('touchcancel', () => { if (sw?.edge) { if (sw.el) slid
 if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) document.documentElement.dataset.standalone = '1';
 load();
 route();
+loadEquip().then(() => { if (equipUrls.size && curRoute().name === 'log' && !curRoute().arg) view.querySelectorAll('.equip').forEach(b => { const ex = exById(b.dataset.ex); if (ex) refreshEquip(ex); }); });
 loadUserStills().then(() => { if (userStills.size && curRoute().name === 'log') view.querySelectorAll('.ex, .dstills').forEach(li => { const ex = exById(li.dataset.id); if (ex) refreshStack(ex); }); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const hadController = !!navigator.serviceWorker.controller;
